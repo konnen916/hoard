@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+vault
+vault.bak
+vault.tmp
+.venv/
