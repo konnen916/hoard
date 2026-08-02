@@ -80,6 +80,33 @@ hoard passwd                                # change the master password
 
 Vault lives at `~/.hoard/vault`, or wherever `$HOARD_VAULT` points.
 
+## The window
+
+```bash
+./hoard_gui.py                 # uses the default vault
+./hoard_gui.py /path/to/vault  # or a specific one
+```
+
+Needs GTK 3, which you already have if you are running a normal Linux desktop
+(`python3-gi` on Debian and Ubuntu). Create the vault with the CLI first, the
+window will not make one for you.
+
+Everything it does is done through the same `hoard.py` in this repo. The window
+never derives a key, picks a nonce or touches a cipher. If it has a bug, the bug
+is about pixels.
+
+- **Locked is a state, not a dialog.** The window is the lock screen until you
+  open it. It returns there after 5 minutes idle, on Escape, or on ctrl+L.
+- **The strip along the bottom says what just happened.** In a program holding
+  your passwords, "what did it just do" should not be hidden in a console.
+- **Copy diagnostics** puts your environment, the vault size, the Argon2id
+  parameters and the recent activity on the clipboard, for pasting into a bug
+  report. **Entry names are replaced with a short hash and no password ever
+  goes near it**, because the list of sites you have accounts on is not
+  something you should paste into a public issue.
+
+Keys: `ctrl+F` filter, `ctrl+C` copy the selected password, `ctrl+L` or `Esc` lock.
+
 ## Threat model
 
 Being specific about this is the difference between security and vibes.
@@ -114,6 +141,17 @@ attackers took customer vaults. Those vaults are now sitting in someone's
 storage being ground against, forever, and the only thing standing between
 them and the contents is each user's master password and whatever KDF settings
 their account happened to have. Sync is a feature with a bill attached.
+
+## History
+
+I wrote a password manager in 2022. It lived on a GitHub account I no longer
+have access to, so this is a rewrite rather than a continuation: new code, new
+vault format, and the benefit of having already made the mistakes once.
+
+The parts that changed are the parts that matter. Argon2id instead of what I
+reached for the first time, authenticated encryption so a modified vault fails
+loudly rather than quietly, and a written down threat model that says what this
+does not protect you from.
 
 ## Backups
 
