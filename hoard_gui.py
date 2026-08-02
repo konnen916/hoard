@@ -430,7 +430,11 @@ class HoardWindow(Gtk.Window):
         row = Gtk.Box(spacing=6)
         row.set_margin_bottom(12)
         val = Gtk.Label(label=value or "Not set", xalign=0)
+        # Selectable so you can drag-copy it, but never focusable: a focused
+        # selectable label draws a caret and then looks like a field you can
+        # type into, which is a lie.
         val.set_selectable(bool(value))
+        val.set_can_focus(False)
         val.set_line_wrap(True)
         val.set_ellipsize(Pango.EllipsizeMode.END)
         row.pack_start(val, True, True, 0)
@@ -450,6 +454,7 @@ class HoardWindow(Gtk.Window):
         self.secret_label = Gtk.Label(label="•" * 12, xalign=0)
         self.secret_label.get_style_context().add_class("secret")
         self.secret_label.set_selectable(True)
+        self.secret_label.set_can_focus(False)
         self.secret_label.set_ellipsize(Pango.EllipsizeMode.END)
         row.pack_start(self.secret_label, True, True, 0)
 
