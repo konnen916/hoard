@@ -182,5 +182,4 @@ Issues and patches welcome. If you find something wrong with the crypto, please
 open an issue rather than being polite about it.
 
 ## License
-
-MIT.
+[MIT](LICENSE). Do what you want with it.
