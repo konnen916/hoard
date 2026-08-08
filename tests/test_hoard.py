@@ -9,12 +9,14 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 import hoard  # noqa: E402
 
@@ -387,6 +389,121 @@ class TestMv(CliBase):
         from contextlib import redirect_stderr
         with redirect_stderr(StringIO()):
             self.assertEqual(hoard.main(["--vault", str(self.path), "mv", "bank", "bank"]), 1)
+
+
+class TestArgon2Backends(unittest.TestCase):
+    """
+    hoard uses cryptography's Argon2id where it exists and argon2-cffi where it
+    does not, because Debian 13 ships cryptography 43 and that has no argon2
+    module at all.
+
+    If the two ever disagree, a vault written on one machine stops opening on
+    another. That is total data loss, so it gets proven rather than assumed.
+    """
+
+    def setUp(self):
+        try:
+            from argon2.low_level import hash_secret_raw  # noqa: F401
+            from cryptography.hazmat.primitives.kdf.argon2 import Argon2id  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"comparing the two needs both installed: {exc}")
+
+    def both(self, password, salt, m, t, p, length=32):
+        from argon2.low_level import Type, hash_secret_raw
+        from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+        pyca = Argon2id(salt=salt, length=length, iterations=t, lanes=p, memory_cost=m).derive(password)
+        cffi = hash_secret_raw(secret=password, salt=salt, time_cost=t, memory_cost=m,
+                               parallelism=p, hash_len=length, type=Type.ID)
+        return pyca, cffi
+
+    def test_they_agree_on_hoards_real_parameters(self):
+        pyca, cffi = self.both(b"correct horse battery staple", os.urandom(16), 64 * 1024, 3, 4)
+        self.assertEqual(pyca, cffi)
+
+    def test_they_agree_on_the_cheap_test_parameters(self):
+        pyca, cffi = self.both(b"pw", os.urandom(16), 8, 1, 1)
+        self.assertEqual(pyca, cffi)
+
+    def test_they_agree_on_a_non_ascii_password(self):
+        pyca, cffi = self.both("senha çãé".encode("utf-8"), os.urandom(16), 1024, 2, 2)
+        self.assertEqual(pyca, cffi)
+
+    def test_they_agree_on_a_longer_key(self):
+        pyca, cffi = self.both(b"pw", os.urandom(16), 1024, 2, 2, length=64)
+        self.assertEqual(pyca, cffi)
+
+
+class TestCrossBackendVaults(unittest.TestCase):
+    """
+    A vault written where cryptography has Argon2id must open where only
+    argon2-cffi does, and the other way round. The debian package can install
+    either backend depending on the release, so if this stops holding then
+    moving a vault between two Debian machines loses it.
+
+    Each side runs in its own process, because blocking an import cannot be
+    undone inside the one already running the tests.
+    """
+
+    BLOCK = "import sys; sys.modules['cryptography.hazmat.primitives.kdf.argon2'] = None\n"
+
+    def setUp(self):
+        try:
+            import argon2  # noqa: F401
+            from cryptography.hazmat.primitives.kdf.argon2 import Argon2id  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"comparing the two needs both installed: {exc}")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self.tmp.name) / "vault"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def script(self, backend, body):
+        return (
+            (self.BLOCK if backend == "argon2-cffi" else "")
+            + f"import sys; sys.path.insert(0, {str(ROOT)!r})\n"
+            + "import hoard\n"
+            + f"assert hoard.KDF_BACKEND == {backend!r}, 'wrong backend: ' + hoard.KDF_BACKEND\n"
+            + f"hoard.ARGON.clear(); hoard.ARGON.update({CHEAP!r})\n"
+            + body
+        )
+
+    def run_as(self, backend, body):
+        done = subprocess.run(
+            [sys.executable, "-c", self.script(backend, body)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def check_portable(self, writer, reader):
+        self.run_as(writer, f"hoard.write_vault(__import__('pathlib').Path({str(self.vault)!r}),"
+                            " {'entries': {'x': {'password': 'portable'}}}, 'pw')\n")
+        got = self.run_as(reader, "import pathlib;"
+                                  f" print(hoard.read_vault(pathlib.Path({str(self.vault)!r}), 'pw')"
+                                  "['entries']['x']['password'])\n")
+        self.assertEqual(got, "portable")
+
+    def test_sealed_by_cryptography_opens_under_argon2_cffi(self):
+        self.check_portable("cryptography", "argon2-cffi")
+
+    def test_sealed_by_argon2_cffi_opens_under_cryptography(self):
+        self.check_portable("argon2-cffi", "cryptography")
+
+
+class TestKdfBackend(unittest.TestCase):
+    def test_the_backend_in_use_is_named(self):
+        self.assertIn(hoard.KDF_BACKEND, {"cryptography", "argon2-cffi"})
+
+    def test_impossible_parameters_raise_valueerror_on_either_backend(self):
+        """
+        derive_key turns ValueError into a clean message for a forged header.
+        argon2-cffi raises HashingError instead, so the wrapper has to
+        normalise it, or hostile input escapes as a traceback on Debian stable
+        and nowhere else.
+        """
+        with self.assertRaises(ValueError):
+            hoard._argon2id(b"pw", b"x" * 16, {"m": 1, "t": 1, "p": 4}, 32)
 
 
 class TestVersion(unittest.TestCase):

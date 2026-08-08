@@ -36,7 +36,6 @@ from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
 __version__ = "0.1.0"
 
@@ -59,15 +58,53 @@ class HoardError(Exception):
 
 # ---------------------------------------------------------------- crypto
 
+# Argon2id only reached PyCA cryptography in 44, and Debian 13 ships 43, which
+# has no argon2 module at all. So fall back to argon2-cffi, which wraps the same
+# reference implementation. The two produce byte identical keys and there is a
+# test proving it, because if they ever drifted apart a vault written on one
+# machine would stop opening on the other.
+#
+# Both wrappers raise ValueError for parameters Argon2id refuses. argon2-cffi
+# raises HashingError natively, and letting that through would mean a forged
+# header escapes as a traceback on one backend and not the other.
+try:
+    from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+
+    KDF_BACKEND = "cryptography"
+
+    def _argon2id(password: bytes, salt: bytes, params: dict[str, int], length: int) -> bytes:
+        return Argon2id(
+            salt=salt,
+            length=length,
+            iterations=params["t"],
+            lanes=params["p"],
+            memory_cost=params["m"],
+        ).derive(password)
+
+except ImportError:
+    from argon2.low_level import Type as _Argon2Type
+    from argon2.low_level import hash_secret_raw as _hash_secret_raw
+    from argon2.exceptions import HashingError as _HashingError
+
+    KDF_BACKEND = "argon2-cffi"
+
+    def _argon2id(password: bytes, salt: bytes, params: dict[str, int], length: int) -> bytes:
+        try:
+            return _hash_secret_raw(
+                secret=password,
+                salt=salt,
+                time_cost=params["t"],
+                memory_cost=params["m"],
+                parallelism=params["p"],
+                hash_len=length,
+                type=_Argon2Type.ID,
+            )
+        except _HashingError as exc:
+            raise ValueError(str(exc)) from None
+
+
 def derive_key(password: str, salt: bytes, params: dict[str, int]) -> bytes:
-    kdf = Argon2id(
-        salt=salt,
-        length=KEY_LEN,
-        iterations=params["t"],
-        lanes=params["p"],
-        memory_cost=params["m"],
-    )
-    return kdf.derive(password.encode("utf-8"))
+    return _argon2id(password.encode("utf-8"), salt, params, KEY_LEN)
 
 
 def seal(vault: dict[str, Any], password: str) -> bytes:
