@@ -52,18 +52,46 @@ it does not save you.
 
 ## Install
 
+On Debian and derivatives, build the packages and install them:
+
+```bash
+git clone https://github.com/konnen916/hoard
+cd hoard
+sudo apt install debhelper
+dpkg-buildpackage -us -uc -b
+sudo apt install ../hoard_*.deb ../hoard-gui_*.deb
+```
+
+`hoard` is the command line tool, `hoard-gui` is the window. They are separate
+packages so that installing the CLI on a server does not pull in GTK. The build
+runs the test suite, so it will not produce a package from a tree whose crypto
+tests fail.
+
+There is no AppImage on purpose. An AppImage would bundle its own copy of
+OpenSSL and the cryptography library, which would then never receive a security
+update from your distribution. For a password manager that is the wrong trade:
+the whole point is that the crypto underneath is maintained by people who patch
+it.
+
+Or run it from the clone:
+
 ```bash
 git clone https://github.com/konnen916/hoard
 cd hoard
 pip install cryptography      # the only dependency, and it is not negotiable
 ./hoard.py --help
-```
-
-Put it on your PATH if you want it to feel official:
-
-```bash
 ln -s "$PWD/hoard.py" ~/.local/bin/hoard
 ```
+
+### A note on Argon2id
+
+Argon2id only reached PyCA cryptography in version 44. Debian 13 ships 43, whose
+cryptography package has no `argon2` module at all, so hoard falls back to
+`argon2-cffi` where it must. Both wrap the same reference implementation and
+derive identical keys, and the test suite proves that a vault sealed under
+either one opens under the other. The package declares this as
+`python3-cryptography (>= 44~) | python3-argon2`, so apt picks whichever your
+release can provide.
 
 ## Use
 
