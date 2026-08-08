@@ -11,6 +11,7 @@ colours, so it looks like the rest of your desktop rather than like a brand.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import platform
@@ -568,13 +569,41 @@ class HoardWindow(Gtk.Window):
         self.note(f"{key.capitalize()} copied", name)
         self.reset_autolock()
 
-    def save(self) -> bool:
-        try:
-            hoard.write_vault(self.vault_path, self.vault, self.password)
-            return True
-        except Exception as exc:
+    def save(self, vault: dict, password: str, on_saved) -> None:
+        """
+        Write the vault off the main thread, then hand the caller the state to
+        commit.
+
+        The caller passes the vault it intends rather than mutating self.vault
+        and hoping. A failed write used to leave memory and disk disagreeing
+        with nothing saying so, and going async would have widened that window
+        from a quarter second to however long the worker takes.
+
+        No button is disabled here. Every caller destroys its dialog before the
+        write finishes, so there would be nothing left to re-enable; the busy
+        flag is what stops a second write starting.
+        """
+        if self._busy:
+            return
+        path, generation = self.vault_path, self._generation
+        self._set_busy(True)
+
+        def done(_result) -> None:
+            self._set_busy(False)
+            if generation != self._generation:
+                return
+            self.vault = vault
+            self.password = password
+            on_saved()
+
+        def failed(exc: Exception) -> None:
+            self._set_busy(False)
+            if generation != self._generation:
+                return
             self.note(f"Could not save: {exc}")
-            return False
+
+        run_off_main(lambda: hoard.write_vault(path, vault, password), done, failed,
+                     GLib.idle_add)
 
     def add_item_dialog(self) -> None:
         dlg = Gtk.Dialog(title="Add item", transient_for=self, modal=True)
@@ -624,16 +653,16 @@ class HoardWindow(Gtk.Window):
             if not secret:
                 err.set_text("Enter a password, or press Generate.")
                 continue
-            self.vault.setdefault("entries", {})[name] = {
+            updated = copy.deepcopy(self.vault)
+            updated.setdefault("entries", {})[name] = {
                 "password": secret,
                 "username": fields["username"].get_text().strip(),
                 "url": fields["url"].get_text().strip(),
                 "note": "",
                 "updated": int(time.time()),
             }
-            if self.save():
-                self.note("Item saved", name)
-                self.refresh_list()
+            self.save(updated, self.password,
+                      lambda: (self.note("Item saved", name), self.refresh_list()))
             break
         dlg.destroy()
         self.reset_autolock()
@@ -650,13 +679,17 @@ class HoardWindow(Gtk.Window):
         dlg.destroy()
         if response != Gtk.ResponseType.OK:
             return
-        del self.vault["entries"][name]
-        if self.save():
+        updated = copy.deepcopy(self.vault)
+        del updated["entries"][name]
+
+        def after() -> None:
             self.note("Item deleted", name)
             self.selected = None
             for child in self.detail.get_children():
                 self.detail.remove(child)
             self.refresh_list()
+
+        self.save(updated, self.password, after)
 
     def change_master_dialog(self) -> None:
         dlg = Gtk.Dialog(title="Change master password", transient_for=self, modal=True)
@@ -686,9 +719,11 @@ class HoardWindow(Gtk.Window):
             if first.get_text() != second.get_text():
                 err.set_text("Those do not match.")
                 continue
-            self.password = first.get_text()
-            if self.save():
-                self.note("Master password changed, vault re-encrypted")
+            # Assigned by save() on success only. It used to be set before the
+            # write, so a failure left the window believing a change that had
+            # never reached the file.
+            self.save(self.vault, first.get_text(),
+                      lambda: self.note("Master password changed, vault re-encrypted"))
             break
         dlg.destroy()
         self.reset_autolock()
