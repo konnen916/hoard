@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
+import csv
 import getpass
 import hashlib
 import hmac
@@ -31,6 +33,7 @@ import string
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -298,6 +301,241 @@ def ask_password(prompt: str = "master password: ", confirm: bool = False) -> st
     return pw
 
 
+# ---------------------------------------------------------------- import
+
+# Column names as each program actually writes them. "required" is what
+# detection keys on. The largest matching signature wins, because a more
+# specific header beats a general one: Chrome's four columns are a subset of
+# LastPass's, so without that rule a LastPass export reads as Chrome and every
+# entry lands under the wrong name.
+CSV_FORMATS: dict[str, dict[str, Any]] = {
+    "keepassxc": {
+        "required": {"Group", "Title", "Password"},
+        "map": {"name": "Title", "username": "Username", "password": "Password",
+                "url": "URL", "note": "Notes", "totp": "TOTP", "group": "Group"},
+    },
+    "bitwarden": {
+        "required": {"name", "login_username", "login_password", "login_uri"},
+        "map": {"name": "name", "username": "login_username", "password": "login_password",
+                "url": "login_uri", "note": "notes", "totp": "login_totp", "group": "folder"},
+    },
+    "1password": {
+        "required": {"Title", "Url", "Username", "Password", "OTPAuth"},
+        "map": {"name": "Title", "username": "Username", "password": "Password",
+                "url": "Url", "note": "Notes", "totp": "OTPAuth", "group": "Tags"},
+    },
+    "lastpass": {
+        "required": {"url", "username", "password", "totp", "extra", "name", "grouping"},
+        "map": {"name": "name", "username": "username", "password": "password",
+                "url": "url", "note": "extra", "totp": "totp", "group": "grouping"},
+    },
+    "chrome": {
+        "required": {"name", "url", "username", "password"},
+        "map": {"name": "name", "username": "username", "password": "password",
+                "url": "url", "note": "note"},
+    },
+    "firefox": {
+        "required": {"url", "username", "password", "guid"},
+        # No title column at all, so the name comes from the host.
+        "map": {"username": "username", "password": "password", "url": "url"},
+    },
+    "nordpass": {
+        "required": {"name", "url", "username", "password", "note", "folder"},
+        "map": {"name": "name", "username": "username", "password": "password",
+                "url": "url", "note": "note", "group": "folder"},
+    },
+    "protonpass": {
+        "required": {"type", "name", "url", "username", "password", "totp", "vault"},
+        "map": {"name": "name", "username": "username", "password": "password",
+                "url": "url", "note": "note", "totp": "totp", "group": "vault"},
+    },
+    "dashlane": {
+        "required": {"title", "password", "otpSecret", "category"},
+        "map": {"name": "title", "username": "username", "password": "password",
+                "url": "url", "note": "note", "totp": "otpSecret", "group": "category"},
+    },
+}
+
+
+def known_formats() -> list[str]:
+    return sorted(set(CSV_FORMATS) | {"kdbx", "bitwarden-json"})
+
+
+def detect_format(path: Path) -> str:
+    """Work out which program wrote this file, or refuse rather than guess."""
+    if path.suffix.lower() == ".kdbx":
+        return "kdbx"
+
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
+        raise HoardError(f"cannot read {path}: {exc}") from None
+    if not text.strip():
+        raise HoardError(f"{path} is empty")
+
+    if text.lstrip().startswith("{"):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise HoardError(f"{path} looks like json but does not parse") from None
+        if isinstance(data, dict) and "items" in data:
+            return "bitwarden-json"
+        raise HoardError(f"unrecognised json in {path}, use --format to say what it is")
+
+    header = next(csv.reader(text.splitlines()), [])
+    columns = {h.strip() for h in header}
+    matches = sorted(
+        ((len(spec["required"]), name) for name, spec in CSV_FORMATS.items()
+         if spec["required"] <= columns),
+        reverse=True,
+    )
+    if not matches:
+        raise HoardError(
+            f"unrecognised columns in {path}, use --format to say what it is "
+            f"(known: {', '.join(known_formats())})"
+        )
+    if len(matches) > 1 and matches[0][0] == matches[1][0]:
+        tied = sorted(name for size, name in matches if size == matches[0][0])
+        raise HoardError(f"{path} matches {' and '.join(tied)}, use --format to choose")
+    return matches[0][1]
+
+
+def _unique(taken: dict[str, Any], name: str) -> str:
+    """Two rows with the same title must not clobber each other."""
+    if name not in taken:
+        return name
+    n = 2
+    while f"{name} ({n})" in taken:
+        n += 1
+    return f"{name} ({n})"
+
+
+def _prefixed(title: str, group: str) -> str:
+    group = (group or "").strip().strip("/")
+    if group.startswith("Root/"):
+        group = group[len("Root/"):]
+    elif group == "Root":
+        group = ""
+    return f"{group}/{title}" if group else title
+
+
+def read_import(path: Path, fmt: str, kdbx_password: str | None = None) -> dict[str, Any]:
+    """Read someone else's export into hoard entries. Never touches the vault."""
+    if fmt == "kdbx":
+        return _read_kdbx(path, kdbx_password)
+    if fmt == "bitwarden-json":
+        return _read_bitwarden_json(path)
+
+    spec = CSV_FORMATS.get(fmt)
+    if spec is None:
+        raise HoardError(f"unknown format {fmt}, known: {', '.join(known_formats())}")
+    mapping = spec["map"]
+
+    def col(row: dict, key: str) -> str:
+        return (row.get(mapping.get(key, ""), "") or "").strip()
+
+    entries: dict[str, Any] = {}
+    with path.open(newline="", encoding="utf-8-sig", errors="replace") as fh:
+        for row in csv.DictReader(fh):
+            title = col(row, "name")
+            if not title:
+                # Firefox exports no title column, so fall back to the host.
+                url = col(row, "url")
+                title = urllib.parse.urlparse(url).netloc or "" if url else ""
+            if not title:
+                continue
+            entry = {
+                "password": col(row, "password"),
+                "username": col(row, "username"),
+                "url": col(row, "url"),
+                "note": col(row, "note"),
+                "updated": int(time.time()),
+            }
+            # Kept even though hoard cannot use it yet. Dropping somebody's
+            # second factor during a migration is unforgivable.
+            if col(row, "totp"):
+                entry["totp"] = col(row, "totp")
+            entries[_unique(entries, _prefixed(title, col(row, "group")))] = entry
+    return entries
+
+
+def _read_bitwarden_json(path: Path) -> dict[str, Any]:
+    data = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+    folders = {f.get("id"): f.get("name", "") for f in data.get("folders", []) or []}
+    entries: dict[str, Any] = {}
+    for item in data.get("items", []) or []:
+        title = (item.get("name") or "").strip()
+        if not title:
+            continue
+        login = item.get("login") or {}
+        uris = login.get("uris") or []
+        entry = {
+            "password": login.get("password") or "",
+            "username": login.get("username") or "",
+            "url": (uris[0].get("uri") if uris else "") or "",
+            "note": item.get("notes") or "",
+            "updated": int(time.time()),
+        }
+        if login.get("totp"):
+            entry["totp"] = login["totp"]
+        name = _prefixed(title, folders.get(item.get("folderId"), ""))
+        entries[_unique(entries, name)] = entry
+    return entries
+
+
+def _read_kdbx(path: Path, password: str | None) -> dict[str, Any]:
+    try:
+        from pykeepass import PyKeePass
+    except ImportError:
+        raise HoardError(
+            "reading a kdbx needs pykeepass: apt install python3-pykeepass"
+        ) from None
+    if not password:
+        raise HoardError("a kdbx file needs its own password")
+
+    try:
+        db = PyKeePass(str(path), password=password)
+    except Exception as exc:
+        raise HoardError(f"could not open {path.name}: {exc}") from None
+
+    entries: dict[str, Any] = {}
+    for item in db.entries:
+        title = (item.title or "").strip()
+        if not title:
+            continue
+        parts = [p for p in (item.group.path if item.group else []) if p and p != "Root"]
+        entry = {
+            "password": item.password or "",
+            "username": item.username or "",
+            "url": item.url or "",
+            "note": item.notes or "",
+            "updated": int(time.time()),
+        }
+        otp = getattr(item, "otp", None)
+        if otp:
+            entry["totp"] = otp
+        entries[_unique(entries, _prefixed(title, "/".join(parts)))] = entry
+    return entries
+
+
+def merge_entries(existing: dict[str, Any], incoming: dict[str, Any],
+                  replace: bool = False) -> tuple[dict[str, Any], list[str], list[str]]:
+    """
+    Combine without mutating either side, so a dry run can compute the outcome
+    and change nothing.
+    """
+    merged = copy.deepcopy(existing)
+    added: list[str] = []
+    skipped: list[str] = []
+    for name, entry in incoming.items():
+        if name in merged and not replace:
+            skipped.append(name)
+            continue
+        merged[name] = entry
+        added.append(name)
+    return merged, added, skipped
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -477,6 +715,57 @@ def cmd_mv(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    source = Path(args.file)
+    if not source.exists():
+        raise HoardError(f"no such file: {source}")
+    path = Path(args.vault)
+    require_vault(path)
+
+    fmt = args.format or detect_format(source)
+
+    kdbx_password = None
+    if fmt == "kdbx":
+        # Two password prompts in a row, so say plainly which is which.
+        kdbx_password = getpass.getpass(f"password for {source.name} (the KeePass one): ")
+
+    incoming = read_import(source, fmt, kdbx_password)
+    if not incoming:
+        print(f"nothing to import from {source} ({fmt})")
+        return 0
+
+    pw = ask_password("hoard master password: ")
+    vault = read_vault(path, pw)
+    merged, added, skipped = merge_entries(
+        vault.get("entries", {}), incoming, replace=args.replace
+    )
+
+    if args.dry_run:
+        print(f"{source} looks like {fmt}")
+        for name in added:
+            print(f"  would add   {name}")
+        for name in skipped:
+            print(f"  would skip  {name}, already in the vault")
+        print(f"{len(added)} to add, {len(skipped)} already there, nothing written")
+        return 0
+
+    vault["entries"] = merged
+    write_vault(path, vault, pw)
+
+    print(f"imported {len(added)} entries from {fmt}")
+    for name in skipped:
+        print(f"  skipped {name}, already in the vault")
+    if skipped:
+        print("use --replace to overwrite those instead")
+
+    if fmt != "kdbx":
+        # A kdbx is encrypted. Everything else on that list is not.
+        tool = "shred -u" if shutil.which("shred") else "rm"
+        print(f"\n{source} still holds every one of those passwords in plaintext.")
+        print(f"delete it when you are done:  {tool} {source}")
+    return 0
+
+
 def cmd_gen(args: argparse.Namespace) -> int:
     print(generate(args.length, symbols=not args.no_symbols))
     return 0
@@ -547,6 +836,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("new")
     s.add_argument("--force", action="store_true", help="replace an existing entry")
     s.set_defaults(func=cmd_mv)
+
+    s = sub.add_parser("import", help="import from another password manager")
+    s.add_argument("file")
+    s.add_argument("--format", choices=known_formats(), default=None,
+                   help="override detection")
+    s.add_argument("--replace", action="store_true",
+                   help="overwrite entries whose name already exists")
+    s.add_argument("--dry-run", action="store_true",
+                   help="show what would happen and write nothing")
+    s.set_defaults(func=cmd_import)
 
     s = sub.add_parser("gen", help="generate a password without touching the vault")
     s.add_argument("-n", "--length", type=int, default=24)

@@ -14,6 +14,7 @@ Depends: ${misc:Depends},
          python3-cryptography,
          python3-cryptography (>= 44~) | python3-argon2
 Recommends: xclip | wl-clipboard
+Suggests: python3-pykeepass
 Description: encrypted password vault in one readable file
  hoard keeps passwords in a single file you can decrypt without hoard. The
  header carrying the Argon2id parameters, the salt and the nonce is plaintext,
@@ -28,6 +29,10 @@ Description: encrypted password vault in one readable file
  Argon2id comes from python3-cryptography where that is new enough to have it,
  and from python3-argon2 otherwise. The two produce identical keys, so a vault
  moves between machines regardless of which one is installed.
+ .
+ hoard import reads exports from KeePassXC, Bitwarden, 1Password, LastPass,
+ Chrome, Firefox, NordPass, Proton Pass and Dashlane, and reads a KeePass
+ database directly if python3-pykeepass is installed.
  .
  This package contains the command line interface.
 

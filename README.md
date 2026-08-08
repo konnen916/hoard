@@ -109,7 +109,30 @@ hoard mv githib github              # fix a typo in a name
 hoard rm oldforum
 hoard gen -n 40                     # just a password, no vault involved
 hoard passwd                        # change the master password
+hoard import export.csv             # bring everything over from somewhere else
 ```
+
+## Coming from another password manager
+
+```bash
+hoard import ~/Downloads/keepassxc.csv --dry-run   # look before writing
+hoard import ~/Downloads/keepassxc.csv             # then do it
+hoard import ~/passwords.kdbx                      # or read the database directly
+```
+
+The format is worked out from the file, and `--format` overrides it if the guess
+is wrong. Recognised: KeePassXC, Bitwarden (CSV and JSON), 1Password, LastPass,
+Chrome, Edge, Brave, Firefox, NordPass, Proton Pass, Dashlane, and KeePass
+`.kdbx` files directly when `python3-pykeepass` is installed.
+
+Names that already exist are skipped and listed, not overwritten. Pass
+`--replace` if overwriting is what you meant. TOTP secrets are carried across
+even though hoard cannot use them yet, because losing a second factor during a
+migration is not recoverable.
+
+Reading a `.kdbx` needs no export at all. Everything else on that list means
+producing a CSV, which is every password you own in plaintext on your disk, so
+hoard tells you where the file is and how to destroy it once the import worked.
 
 The clipboard wipe only fires if the clipboard still holds the password hoard
 put there, so copying something else in the meantime does not cost you it. If
