@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=hoard
+GenericName=Password Vault
+Comment=Encrypted password vault in one readable file
+Exec=hoard-gui
+Icon=dialog-password
+Terminal=false
+Categories=Utility;Security;
+Keywords=password;vault;secret;encryption;argon2;
+StartupNotify=true

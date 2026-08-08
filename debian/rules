@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# Build the package only if the suite passes. A password manager that fails its
+# own crypto tests should not become an installable file.
+override_dh_auto_test:
+	python3 -m unittest discover tests
+
+# The modules are imported, never executed directly. The wrappers in /usr/bin
+# are the entry points, so these do not need the executable bit and Debian
+# policy would rather they did not have it.
+override_dh_fixperms:
+	dh_fixperms
+	chmod 644 debian/hoard/usr/lib/hoard/hoard.py
+	chmod 644 debian/hoard-gui/usr/lib/hoard/hoard_gui.py

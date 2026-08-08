@@ -1,0 +1,47 @@
+Source: hoard
+Section: utils
+Priority: optional
+Maintainer: konnen916 <300166086+konnen916@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.7.0
+Homepage: https://github.com/konnen916/hoard
+Rules-Requires-Root: no
+
+Package: hoard
+Architecture: all
+Depends: ${misc:Depends},
+         python3 (>= 3.11),
+         python3-cryptography,
+         python3-cryptography (>= 44~) | python3-argon2
+Recommends: xclip | wl-clipboard
+Description: encrypted password vault in one readable file
+ hoard keeps passwords in a single file you can decrypt without hoard. The
+ header carrying the Argon2id parameters, the salt and the nonce is plaintext,
+ so anyone can read how the vault was made, and it is authenticated as
+ associated data, so nobody can weaken those parameters without invalidating
+ the tag.
+ .
+ Fresh salt and fresh nonce on every write, contents sealed with
+ ChaCha20-Poly1305, and the file format documented so the vault outlives this
+ program.
+ .
+ Argon2id comes from python3-cryptography where that is new enough to have it,
+ and from python3-argon2 otherwise. The two produce identical keys, so a vault
+ moves between machines regardless of which one is installed.
+ .
+ This package contains the command line interface.
+
+Package: hoard-gui
+Architecture: all
+Depends: ${misc:Depends},
+         hoard (= ${binary:Version}),
+         python3-gi,
+         gir1.2-gtk-3.0
+Description: encrypted password vault in one readable file (GTK interface)
+ hoard keeps passwords in a single file you can decrypt without hoard, using
+ Argon2id and ChaCha20-Poly1305.
+ .
+ This package contains a GTK window for the vault. It follows the system theme
+ rather than shipping its own colours, so it looks like the rest of the desktop
+ instead of like a brand. Every cryptographic operation is done by the hoard
+ package; nothing in the window derives a key or touches a cipher.

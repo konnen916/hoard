@@ -1,0 +1,3 @@
+hoard_gui.py usr/lib/hoard
+packaging/hoard-gui usr/bin
+packaging/hoard.desktop usr/share/applications

@@ -4,3 +4,12 @@ vault
 vault.bak
 vault.tmp
 .venv/
+
+# debian build artifacts, not the packaging sources
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/hoard/
+debian/hoard-gui/
+debian/*.debhelper.log
+debian/*.substvars

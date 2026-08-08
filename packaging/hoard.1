@@ -1,0 +1,116 @@
+.TH HOARD 1 "August 2026" "hoard 0.1.0" "User Commands"
+.SH NAME
+hoard \- encrypted password vault in one readable file
+.SH SYNOPSIS
+.B hoard
+.RI [ \-\-vault
+.IR PATH ]
+.I COMMAND
+.RI [ ARGS ]
+.SH DESCRIPTION
+.B hoard
+keeps passwords in a single file you can decrypt without
+.BR hoard .
+The header carrying the Argon2id parameters, the salt and the nonce is
+plaintext, because you cannot derive the key without them. It is passed to the
+cipher as associated data, so the parameters can be read by anyone and weakened
+by nobody: editing them invalidates the authentication tag instead of producing
+a cheaper key.
+.PP
+A fresh salt and a fresh nonce are generated on every write. Nonce reuse is how
+most homemade encryption dies, so it is made structurally impossible rather than
+avoided by being careful.
+.PP
+There is no account, no server and no synchronisation. If you forget the master
+password the contents are gone, and there is no reset link.
+.SH COMMANDS
+.TP
+.B init
+Create a new vault. Prompts for a master password twice.
+.TP
+.BI add " NAME"
+Add an entry. With
+.B \-g
+the password is generated rather than typed.
+.TP
+.BI edit " NAME"
+Change fields on an existing entry, leaving the others alone. Passing a flag
+with an empty value clears that field, which is not the same as omitting the
+flag.
+.TP
+.BI get " NAME"
+Copy the entry's password to the clipboard. It is wiped after twenty seconds,
+but only if the clipboard still holds it, so copying something else in the
+meantime does not cost you that. With
+.B \-\-show
+the password is printed instead.
+.TP
+.RB [ ls ]
+.I PATTERN
+List entries. With a pattern, only those whose name, username or url contains
+it, case insensitively. Notes are not searched.
+.TP
+.BI mv " OLD NEW"
+Rename an entry, carrying every field across.
+.TP
+.BI rm " NAME"
+Remove an entry.
+.TP
+.B gen
+Generate a password and print it, without touching the vault.
+.TP
+.B passwd
+Change the master password and re\-encrypt the vault under it.
+.SH OPTIONS
+.TP
+.BI \-\-vault " PATH"
+Use this vault instead of the default.
+.TP
+.B \-\-version
+Print the version and exit.
+.TP
+.B \-\-json
+On
+.BR ls ,
+emit machine readable output. Passwords are never included, because this is the
+output people redirect into files and pipe into other programs.
+.SH FILES
+.TP
+.I ~/.hoard/vault
+The vault. Created mode 0600.
+.TP
+.I ~/.hoard/vault.bak
+The previous contents, kept on each write. Note that after
+.B passwd
+this backup is still readable with the old master password.
+.SH ENVIRONMENT
+.TP
+.B HOARD_VAULT
+Path to the vault, overriding the default.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An error the user should see, such as a wrong password or a missing entry.
+.TP
+.B 130
+Interrupted.
+.SH VAULT FORMAT
+.nf
+b"HOARD1\\n" + header_json + b"\\n" + ciphertext
+.fi
+.PP
+The header is JSON holding
+.IR kdf ", " m ", " t ", " p ", " salt " and " nonce .
+The ciphertext is the vault JSON sealed with ChaCha20\-Poly1305 under a key
+derived by Argon2id, with the header as associated data.
+.PP
+Argon2id is taken from python3\-cryptography where that version provides it and
+from python3\-argon2 otherwise. Both wrap the same reference implementation and
+produce identical keys, so a vault opens on either.
+.SH SEE ALSO
+.BR hoard-gui (1)
+.SH AUTHOR
+konnen916

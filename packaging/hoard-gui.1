@@ -1,0 +1,46 @@
+.TH HOARD-GUI 1 "August 2026" "hoard 0.1.0" "User Commands"
+.SH NAME
+hoard-gui \- a window for the hoard vault
+.SH SYNOPSIS
+.B hoard-gui
+.RI [ VAULT ]
+.SH DESCRIPTION
+.B hoard-gui
+opens a GTK window onto the vault managed by
+.BR hoard (1).
+It prompts for the master password, then lists the entries and lets you copy,
+add, edit and remove them.
+.PP
+Every cryptographic operation is performed by the
+.B hoard
+module. Nothing in the window derives a key, chooses a nonce or touches a
+cipher, so there is one implementation of the vault format rather than two that
+have to be kept in agreement.
+.PP
+The window deliberately follows the system GTK theme instead of shipping its own
+colours, so it looks like the rest of the desktop rather than like a brand. The
+only override is that secrets are shown in a monospace font, so that l, 1 and I,
+and 0 and O, cannot be confused when read aloud or copied by hand.
+.PP
+The vault locks itself again after five minutes without interaction.
+.SH OPTIONS
+.TP
+.I VAULT
+Path to the vault. Defaults to the same location
+.BR hoard (1)
+uses.
+.SH DIAGNOSTICS
+The window can export a diagnostic report for bug reports. It redacts entry
+names and never includes passwords.
+.SH FILES
+.TP
+.I ~/.hoard/vault
+The vault.
+.SH ENVIRONMENT
+.TP
+.B HOARD_VAULT
+Path to the vault, overriding the default.
+.SH SEE ALSO
+.BR hoard (1)
+.SH AUTHOR
+konnen916
