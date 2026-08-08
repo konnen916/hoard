@@ -406,6 +406,26 @@ def cmd_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mv(args: argparse.Namespace) -> int:
+    path = Path(args.vault)
+    require_vault(path)
+    if args.old == args.new:
+        raise HoardError("old and new names are the same")
+
+    pw = ask_password()
+    vault = read_vault(path, pw)
+    entries = vault.setdefault("entries", {})
+    if args.old not in entries:
+        raise HoardError(f"no entry called {args.old}")
+    if args.new in entries and not args.force:
+        raise HoardError(f"{args.new} already exists, use --force to replace it")
+
+    entries[args.new] = entries.pop(args.old)
+    write_vault(path, vault, pw)
+    print(f"renamed {args.old} to {args.new}")
+    return 0
+
+
 def cmd_gen(args: argparse.Namespace) -> int:
     print(generate(args.length, symbols=not args.no_symbols))
     return 0
@@ -469,6 +489,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("rm", help="remove an entry")
     s.add_argument("name")
     s.set_defaults(func=cmd_rm)
+
+    s = sub.add_parser("mv", help="rename an entry")
+    s.add_argument("old")
+    s.add_argument("new")
+    s.add_argument("--force", action="store_true", help="replace an existing entry")
+    s.set_defaults(func=cmd_mv)
 
     s = sub.add_parser("gen", help="generate a password without touching the vault")
     s.add_argument("-n", "--length", type=int, default=24)

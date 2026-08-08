@@ -345,5 +345,49 @@ class TestEdit(CliBase):
         self.assertEqual(self.entries()["github"]["password"], "keep-me")
 
 
+class TestMv(CliBase):
+    def setUp(self):
+        super().setUp()
+        self.seed({
+            "githib": {"password": "a", "username": "konnen916", "url": "github.com", "note": "n", "updated": 1},
+            "bank": {"password": "b", "username": "luiz", "url": "", "note": "", "updated": 2},
+        })
+
+    def test_rename_carries_every_field(self):
+        code, _ = self.invoke("mv", "githib", "github")
+        self.assertEqual(code, 0)
+        entries = self.entries()
+        self.assertNotIn("githib", entries)
+        self.assertEqual(entries["github"], {
+            "password": "a", "username": "konnen916", "url": "github.com", "note": "n", "updated": 1,
+        })
+
+    def test_renaming_a_missing_entry_is_an_error(self):
+        from io import StringIO
+        from contextlib import redirect_stderr
+        with redirect_stderr(StringIO()):
+            self.assertEqual(hoard.main(["--vault", str(self.path), "mv", "nope", "x"]), 1)
+
+    def test_refuses_to_clobber(self):
+        from io import StringIO
+        from contextlib import redirect_stderr
+        with redirect_stderr(StringIO()):
+            self.assertEqual(hoard.main(["--vault", str(self.path), "mv", "githib", "bank"]), 1)
+        self.assertEqual(self.entries()["bank"]["password"], "b")
+
+    def test_force_allows_clobbering(self):
+        self.invoke("mv", "githib", "bank", "--force")
+        entries = self.entries()
+        self.assertEqual(entries["bank"]["password"], "a")
+        self.assertNotIn("githib", entries)
+
+    def test_renaming_to_the_same_name_is_an_error(self):
+        """Otherwise it reports success for doing nothing."""
+        from io import StringIO
+        from contextlib import redirect_stderr
+        with redirect_stderr(StringIO()):
+            self.assertEqual(hoard.main(["--vault", str(self.path), "mv", "bank", "bank"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
