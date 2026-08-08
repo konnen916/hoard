@@ -285,6 +285,46 @@ def cmd_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_edit(args: argparse.Namespace) -> int:
+    path = Path(args.vault)
+    require_vault(path)
+    if args.password and args.generate:
+        raise HoardError("-p and -g both given, pick one")
+
+    pw = ask_password()
+    vault = read_vault(path, pw)
+    entry = vault.get("entries", {}).get(args.name)
+    if entry is None:
+        raise HoardError(f"no entry called {args.name}, use: hoard add {args.name}")
+
+    # None means the flag was absent. An empty string means clear the field,
+    # which is a real thing to want and must not be confused with omission.
+    changed = []
+    for flag, key in (("username", "username"), ("url", "url"), ("note", "note")):
+        value = getattr(args, flag)
+        if value is not None:
+            entry[key] = value
+            changed.append(key)
+
+    if args.generate:
+        entry["password"] = generate(args.length)
+        changed.append("password")
+    elif args.password:
+        secret = getpass.getpass("new password: ")
+        if not secret:
+            raise HoardError("empty password, no")
+        entry["password"] = secret
+        changed.append("password")
+
+    if not changed:
+        raise HoardError("nothing to change, pass at least one of -u --url --note -p -g")
+
+    entry["updated"] = int(time.time())
+    write_vault(path, vault, pw)
+    print(f"updated {args.name} ({', '.join(changed)})")
+    return 0
+
+
 def cmd_get(args: argparse.Namespace) -> int:
     path = Path(args.vault)
     require_vault(path)
@@ -405,6 +445,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-n", "--length", type=int, default=24)
     s.add_argument("--force", action="store_true", help="replace an existing entry")
     s.set_defaults(func=cmd_add)
+
+    s = sub.add_parser("edit", help="change fields on an existing entry")
+    s.add_argument("name")
+    s.add_argument("-u", "--username", default=None)
+    s.add_argument("--url", default=None)
+    s.add_argument("--note", default=None)
+    s.add_argument("-p", "--password", action="store_true", help="prompt for a new password")
+    s.add_argument("-g", "--generate", action="store_true", help="generate a new password")
+    s.add_argument("-n", "--length", type=int, default=24)
+    s.set_defaults(func=cmd_edit)
 
     s = sub.add_parser("get", help="copy an entry's password to the clipboard")
     s.add_argument("name")

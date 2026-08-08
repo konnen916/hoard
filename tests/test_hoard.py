@@ -285,5 +285,65 @@ class TestLs(CliBase):
         self.assertEqual(json.loads(out), [])
 
 
+class TestEdit(CliBase):
+    def setUp(self):
+        super().setUp()
+        self.seed({"github": {
+            "password": "keep-me", "username": "old", "url": "github.com",
+            "note": "recovery codes live here", "updated": 1,
+        }})
+
+    def test_changing_one_field_leaves_the_others_alone(self):
+        """
+        The reason edit exists. add --force made you retype the password and
+        silently dropped the url and the note.
+        """
+        code, _ = self.invoke("edit", "github", "-u", "konnen916")
+        self.assertEqual(code, 0)
+        entry = self.entries()["github"]
+        self.assertEqual(entry["username"], "konnen916")
+        self.assertEqual(entry["password"], "keep-me")
+        self.assertEqual(entry["url"], "github.com")
+        self.assertEqual(entry["note"], "recovery codes live here")
+
+    def test_updated_is_bumped(self):
+        self.invoke("edit", "github", "--url", "github.com/konnen916")
+        self.assertGreater(self.entries()["github"]["updated"], 1)
+
+    def test_generate_replaces_only_the_password(self):
+        self.invoke("edit", "github", "-g", "-n", "40")
+        entry = self.entries()["github"]
+        self.assertEqual(len(entry["password"]), 40)
+        self.assertEqual(entry["username"], "old")
+
+    def test_a_field_can_be_set_to_empty(self):
+        """Clearing a url is a real thing to want, and is not the same as omitting it."""
+        self.invoke("edit", "github", "--url", "")
+        self.assertEqual(self.entries()["github"]["url"], "")
+
+    def test_editing_a_missing_entry_is_an_error_not_a_create(self):
+        from io import StringIO
+        from contextlib import redirect_stderr
+        err = StringIO()
+        with redirect_stderr(err):
+            code = hoard.main(["--vault", str(self.path), "edit", "nope", "-u", "x"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("nope", self.entries())
+
+    def test_edit_with_no_fields_is_an_error(self):
+        from io import StringIO
+        from contextlib import redirect_stderr
+        with redirect_stderr(StringIO()):
+            self.assertEqual(hoard.main(["--vault", str(self.path), "edit", "github"]), 1)
+
+    def test_password_and_generate_together_is_an_error(self):
+        """Guessing which one was meant, in the command that overwrites a password, loses data."""
+        from io import StringIO
+        from contextlib import redirect_stderr
+        with redirect_stderr(StringIO()):
+            self.assertEqual(hoard.main(["--vault", str(self.path), "edit", "github", "-p", "-g"]), 1)
+        self.assertEqual(self.entries()["github"]["password"], "keep-me")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
