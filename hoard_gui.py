@@ -223,6 +223,7 @@ class HoardWindow(Gtk.Window):
         ])
         menu("Vault", [
             ("Add item", self.add_item_dialog),
+            ("Edit item", lambda: self.selected and self.edit_item_dialog(self.selected)),
             ("Delete item", lambda: self.selected and self.delete_item(self.selected)),
             None,
             ("Change master password", self.change_master_dialog),
@@ -461,17 +462,34 @@ class HoardWindow(Gtk.Window):
         if entry is None:
             return
 
-        head = Gtk.Label(label="ITEM INFORMATION", xalign=0)
-        head.get_style_context().add_class("sectionhead")
-        head.set_margin_bottom(10)
-        self.detail.pack_start(head, False, False, 0)
+        title = Gtk.Label(xalign=0)
+        title.set_markup(f"<big><b>{GLib.markup_escape_text(name)}</b></big>")
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        title.set_margin_bottom(12)
+        self.detail.pack_start(title, False, False, 0)
 
-        self.field("Name", name)
-        self.field("Username", entry.get("username") or "", copyable="username")
-        self.password_field(name)
-        self.field("Website", entry.get("url") or "", copyable="url")
+        # Grouped rather than one flat stack. Chunking related fields is the
+        # one genuinely good idea in how Proton Pass and Bitwarden lay an item
+        # out: your eye learns where each group sits instead of rereading
+        # labels. The frame is GTK's own, so this follows the desktop theme
+        # rather than introducing a palette.
+        self.card([
+            lambda: self.field_row("Username", entry.get("username") or "",
+                                   copyable="username"),
+            lambda: self.password_row(name),
+        ])
+
+        if entry.get("url"):
+            self.card([lambda: self.field_row("Website", entry["url"], copyable="url")])
+
         if entry.get("note"):
-            self.field("Note", entry["note"])
+            self.card([lambda: self.field_row("Note", entry["note"], wrap=True)])
+
+        if entry.get("totp"):
+            # Carried in from an import. hoard cannot generate codes yet, and
+            # saying so is better than showing a field that looks broken.
+            self.card([lambda: self.field_row(
+                "2FA secret (hoard cannot generate codes yet)", entry["totp"])])
 
         if entry.get("updated"):
             stamp = time.strftime("%d %b %Y, %H:%M:%S", time.localtime(entry["updated"]))
@@ -482,6 +500,9 @@ class HoardWindow(Gtk.Window):
 
         actions = Gtk.Box(spacing=6)
         actions.set_margin_top(16)
+        edit = Gtk.Button(label="Edit")
+        edit.connect("clicked", lambda *_: self.edit_item_dialog(name))
+        actions.pack_start(edit, False, False, 0)
         delete = Gtk.Button(label="Delete")
         delete.get_style_context().add_class("destructive-action")
         delete.connect("clicked", lambda *_: self.delete_item(name))
@@ -490,51 +511,76 @@ class HoardWindow(Gtk.Window):
 
         self.detail.show_all()
 
-    def field(self, label: str, value: str, copyable: str | None = None) -> None:
-        lbl = Gtk.Label(label=label, xalign=0)
-        lbl.get_style_context().add_class("fieldlabel")
-        self.detail.pack_start(lbl, False, False, 0)
+    def card(self, rows) -> None:
+        """One framed group of related fields, separated by GTK's own rules."""
+        frame = Gtk.Frame()
+        frame.set_margin_bottom(12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        frame.add(box)
+        for index, build in enumerate(rows):
+            if index:
+                box.pack_start(Gtk.Separator(), False, False, 0)
+            box.pack_start(build(), False, False, 0)
+        self.detail.pack_start(frame, False, False, 0)
 
-        row = Gtk.Box(spacing=6)
-        row.set_margin_bottom(12)
+    def field_row(self, label: str, value: str, copyable: str | None = None,
+                  wrap: bool = False, buttons: list | None = None) -> Gtk.Widget:
+        """
+        A dim caption above the value, actions on the right. Every row is the
+        same shape so your eye lands in the same place each time.
+        """
+        row = Gtk.Box(spacing=8)
+        row.set_border_width(9)
+
+        stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        caption = Gtk.Label(label=label, xalign=0)
+        caption.get_style_context().add_class("fieldlabel")
+        stack.pack_start(caption, False, False, 0)
+
         val = Gtk.Label(label=value or "Not set", xalign=0)
         # Selectable so you can drag-copy it, but never focusable: a focused
         # selectable label draws a caret and then looks like a field you can
         # type into, which is a lie.
         val.set_selectable(bool(value))
         val.set_can_focus(False)
-        val.set_line_wrap(True)
-        val.set_ellipsize(Pango.EllipsizeMode.END)
-        row.pack_start(val, True, True, 0)
+        if wrap:
+            val.set_line_wrap(True)
+        else:
+            val.set_ellipsize(Pango.EllipsizeMode.END)
+        stack.pack_start(val, False, False, 0)
+        row.pack_start(stack, True, True, 0)
+
+        for button in reversed(buttons or []):
+            row.pack_end(button, False, False, 0)
         if copyable and value:
             btn = icon_button("edit-copy", f"Copy {label.lower()}", "Copy")
             btn.connect("clicked", lambda *_: self.copy_field(self.selected, copyable))
             row.pack_end(btn, False, False, 0)
-        self.detail.pack_start(row, False, False, 0)
+        return row
 
-    def password_field(self, name: str) -> None:
-        lbl = Gtk.Label(label="Password", xalign=0)
-        lbl.get_style_context().add_class("fieldlabel")
-        self.detail.pack_start(lbl, False, False, 0)
-
-        row = Gtk.Box(spacing=6)
-        row.set_margin_bottom(12)
-        self.secret_label = Gtk.Label(label="•" * 12, xalign=0)
+    def password_row(self, name: str) -> Gtk.Widget:
+        self.secret_label = Gtk.Label(label="\u2022" * 12, xalign=0)
         self.secret_label.get_style_context().add_class("secret")
         self.secret_label.set_selectable(True)
         self.secret_label.set_can_focus(False)
         self.secret_label.set_ellipsize(Pango.EllipsizeMode.END)
-        row.pack_start(self.secret_label, True, True, 0)
 
         eye = icon_button("view-reveal-symbolic", "Show password", "Show")
         eye.connect("clicked", lambda b: self.toggle_reveal(b, name))
-        row.pack_end(eye, False, False, 0)
-
         copy = icon_button("edit-copy", "Copy password", "Copy")
         copy.connect("clicked", lambda *_: self.copy_password(name))
-        row.pack_end(copy, False, False, 0)
 
-        self.detail.pack_start(row, False, False, 0)
+        row = Gtk.Box(spacing=8)
+        row.set_border_width(9)
+        stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        caption = Gtk.Label(label="Password", xalign=0)
+        caption.get_style_context().add_class("fieldlabel")
+        stack.pack_start(caption, False, False, 0)
+        stack.pack_start(self.secret_label, False, False, 0)
+        row.pack_start(stack, True, True, 0)
+        row.pack_end(copy, False, False, 0)
+        row.pack_end(eye, False, False, 0)
+        return row
 
     def toggle_reveal(self, button: Gtk.Button, name: str) -> None:
         self.revealed = not self.revealed
@@ -605,36 +651,206 @@ class HoardWindow(Gtk.Window):
         run_off_main(lambda: hoard.write_vault(path, vault, password), done, failed,
                      GLib.idle_add)
 
-    def add_item_dialog(self) -> None:
-        dlg = Gtk.Dialog(title="Add item", transient_for=self, modal=True)
+    def generator_dialog(self, parent) -> str | None:
+        """
+        Two modes behind a stack switcher, with a live preview and the entropy
+        stated in bits.
+
+        Bits rather than a coloured strength bar, because a bar means whatever
+        its author felt like and this number is a fact you can check.
+        """
+        dlg = Gtk.Dialog(title="Generate", transient_for=parent, modal=True)
         dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        save = dlg.add_button("Save", Gtk.ResponseType.OK)
-        save.get_style_context().add_class("suggested-action")
+        use = dlg.add_button("Use", Gtk.ResponseType.OK)
+        use.get_style_context().add_class("suggested-action")
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        outer.set_border_width(14)
+
+        preview = Gtk.Label(xalign=0)
+        preview.get_style_context().add_class("secret")
+        preview.set_selectable(True)
+        preview.set_can_focus(False)
+        preview.set_line_wrap(True)
+        preview.set_width_chars(40)
+        outer.pack_start(preview, False, False, 0)
+
+        strength = Gtk.Label(xalign=0)
+        strength.get_style_context().add_class("fieldlabel")
+        outer.pack_start(strength, False, False, 0)
+
+        stack = Gtk.Stack()
+        switcher = Gtk.StackSwitcher(stack=stack)
+        switcher.set_halign(Gtk.Align.CENTER)
+        outer.pack_start(switcher, False, False, 0)
+        outer.pack_start(stack, False, False, 0)
+
+        # ---- random characters
+        chars_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        length_row = Gtk.Box(spacing=8)
+        length_row.pack_start(Gtk.Label(label="Length", xalign=0), False, False, 0)
+        length = Gtk.Adjustment(value=24, lower=4, upper=128, step_increment=1, page_increment=8)
+        length_row.pack_start(Gtk.SpinButton(adjustment=length, numeric=True), False, False, 0)
+        length_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=length)
+        length_scale.set_draw_value(False)
+        length_row.pack_start(length_scale, True, True, 0)
+        chars_page.pack_start(length_row, False, False, 0)
+
+        toggles = {}
+        for key, label in (("upper", "Capitals, A to Z"),
+                           ("lower", "Letters, a to z"),
+                           ("digits", "Numbers, 0 to 9"),
+                           ("symbols", "Symbols")):
+            check = Gtk.CheckButton(label=label)
+            check.set_active(True)
+            toggles[key] = check
+            chars_page.pack_start(check, False, False, 0)
+        ambiguous = Gtk.CheckButton(label="Avoid look-alikes, l I 1 O 0")
+        chars_page.pack_start(ambiguous, False, False, 0)
+        stack.add_titled(chars_page, "chars", "Password")
+
+        # ---- passphrase
+        words_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        words_row = Gtk.Box(spacing=8)
+        words_row.pack_start(Gtk.Label(label="Words", xalign=0), False, False, 0)
+        words = Gtk.Adjustment(value=6, lower=3, upper=12, step_increment=1, page_increment=1)
+        words_row.pack_start(Gtk.SpinButton(adjustment=words, numeric=True), False, False, 0)
+        words_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=words)
+        words_scale.set_draw_value(False)
+        words_row.pack_start(words_scale, True, True, 0)
+        words_page.pack_start(words_row, False, False, 0)
+
+        sep_row = Gtk.Box(spacing=8)
+        sep_row.pack_start(Gtk.Label(label="Between words", xalign=0), False, False, 0)
+        separator = Gtk.ComboBoxText()
+        for value, label in (("-", "hyphen"), (".", "full stop"), (" ", "space"), ("_", "underscore")):
+            separator.append(value, label)
+        separator.set_active_id("-")
+        sep_row.pack_start(separator, False, False, 0)
+        words_page.pack_start(sep_row, False, False, 0)
+
+        capitalise = Gtk.CheckButton(label="Capitalise Each Word")
+        number = Gtk.CheckButton(label="Add two digits on the end")
+        words_page.pack_start(capitalise, False, False, 0)
+        words_page.pack_start(number, False, False, 0)
+        stack.add_titled(words_page, "words", "Passphrase")
+
+        err = Gtk.Label(label="", xalign=0)
+        err.get_style_context().add_class("error")
+        outer.pack_start(err, False, False, 0)
+
+        state = {"value": ""}
+
+        def regenerate(*_):
+            try:
+                if stack.get_visible_child_name() == "words":
+                    count = int(words.get_value())
+                    state["value"] = hoard.passphrase(
+                        count,
+                        separator=separator.get_active_id() or "-",
+                        capitalise=capitalise.get_active(),
+                        number=number.get_active(),
+                    )
+                    bits = hoard.passphrase_bits(count)
+                else:
+                    options = {key: check.get_active() for key, check in toggles.items()}
+                    options["exclude_ambiguous"] = ambiguous.get_active()
+                    state["value"] = hoard.generate(int(length.get_value()), **options)
+                    bits = hoard.password_bits(int(length.get_value()), **options)
+                preview.set_text(state["value"])
+                strength.set_text(f"{bits:.0f} bits of entropy")
+                err.set_text("")
+                use.set_sensitive(True)
+            except hoard.HoardError as exc:
+                # Refused rather than quietly handing back something weaker
+                # than was asked for.
+                state["value"] = ""
+                preview.set_text("")
+                strength.set_text("")
+                message = str(exc)
+                err.set_text(message[0].upper() + message[1:] + ".")
+                use.set_sensitive(False)
+
+        for widget in (*toggles.values(), ambiguous, capitalise, number):
+            widget.connect("toggled", regenerate)
+        for adjustment in (length, words):
+            adjustment.connect("value-changed", regenerate)
+        separator.connect("changed", regenerate)
+        stack.connect("notify::visible-child", regenerate)
+
+        again = Gtk.Button(label="Regenerate")
+        again.connect("clicked", regenerate)
+        outer.pack_start(again, False, False, 0)
+
+        regenerate()
+        dlg.get_content_area().add(outer)
+        dlg.show_all()
+        chosen = state["value"] if dlg.run() == Gtk.ResponseType.OK else None
+        dlg.destroy()
+        return chosen
+
+    def item_dialog(self, existing: str | None = None) -> None:
+        """
+        One form for adding and editing, so the two cannot drift apart. That is
+        how the window ended up able to create an item but never change one.
+        """
+        entry = self.entries().get(existing, {}) if existing else {}
+        dlg = Gtk.Dialog(title="Edit item" if existing else "Add item",
+                         transient_for=self, modal=True)
+        dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        confirm = dlg.add_button("Save", Gtk.ResponseType.OK)
+        confirm.get_style_context().add_class("suggested-action")
 
         grid = Gtk.Grid(row_spacing=8, column_spacing=10)
         grid.set_border_width(14)
         fields = {}
-        for i, (key, label) in enumerate((("name", "Name"), ("username", "Username"), ("url", "Website"))):
+        rows = (("name", "Name", existing or ""),
+                ("username", "Username", entry.get("username", "")),
+                ("url", "Website", entry.get("url", "")),
+                ("totp", "2FA secret", entry.get("totp", "")))
+        for i, (key, label, value) in enumerate(rows):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, i, 1, 1)
             e = Gtk.Entry()
             e.set_width_chars(32)
+            e.set_text(value)
             fields[key] = e
             grid.attach(e, 1, i, 1, 1)
+        fields["totp"].set_placeholder_text("stored, not yet used to generate codes")
 
-        grid.attach(Gtk.Label(label="Password", xalign=0), 0, 3, 1, 1)
+        row = len(rows)
+        grid.attach(Gtk.Label(label="Password", xalign=0), 0, row, 1, 1)
         pw_box = Gtk.Box(spacing=6)
         pw = Gtk.Entry()
         pw.set_visibility(False)
         pw.set_width_chars(24)
+        pw.set_text(entry.get("password", ""))
         pw_box.pack_start(pw, True, True, 0)
         gen = Gtk.Button(label="Generate")
-        gen.connect("clicked", lambda *_: (pw.set_text(hoard.generate(24)), pw.set_visibility(True)))
+
+        def generate_into_field(*_):
+            chosen = self.generator_dialog(dlg)
+            if chosen:
+                pw.set_text(chosen)
+                pw.set_visibility(True)
+
+        gen.connect("clicked", generate_into_field)
         pw_box.pack_end(gen, False, False, 0)
-        grid.attach(pw_box, 1, 3, 1, 1)
+        grid.attach(pw_box, 1, row, 1, 1)
+
+        grid.attach(Gtk.Label(label="Note", xalign=0), 0, row + 1, 1, 1)
+        note_view = Gtk.TextView()
+        note_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        note_view.get_buffer().set_text(entry.get("note", ""))
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_min_content_height(70)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(note_view)
+        grid.attach(scroller, 1, row + 1, 1, 1)
 
         err = Gtk.Label(label="", xalign=0)
         err.get_style_context().add_class("error")
-        grid.attach(err, 0, 4, 2, 1)
+        grid.attach(err, 0, row + 2, 2, 1)
 
         dlg.get_content_area().add(grid)
         dlg.show_all()
@@ -647,25 +863,44 @@ class HoardWindow(Gtk.Window):
             if not name:
                 err.set_text("Give the item a name.")
                 continue
-            if name in self.entries():
+            if name != existing and name in self.entries():
                 err.set_text(f"An item called {name} already exists.")
                 continue
             if not secret:
                 err.set_text("Enter a password, or press Generate.")
                 continue
+
+            buf = note_view.get_buffer()
+            note = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
+
             updated = copy.deepcopy(self.vault)
-            updated.setdefault("entries", {})[name] = {
+            entries = updated.setdefault("entries", {})
+            if existing and existing != name:
+                # A rename, so the old key goes rather than leaving a duplicate.
+                entries.pop(existing, None)
+            record = {
                 "password": secret,
                 "username": fields["username"].get_text().strip(),
                 "url": fields["url"].get_text().strip(),
-                "note": "",
+                "note": note,
                 "updated": int(time.time()),
             }
+            totp = fields["totp"].get_text().strip()
+            if totp:
+                record["totp"] = totp
+            entries[name] = record
+
             self.save(updated, self.password,
                       lambda: (self.note("Item saved", name), self.refresh_list()))
             break
         dlg.destroy()
         self.reset_autolock()
+
+    def add_item_dialog(self) -> None:
+        self.item_dialog()
+
+    def edit_item_dialog(self, name: str) -> None:
+        self.item_dialog(name)
 
     def delete_item(self, name: str) -> None:
         dlg = Gtk.MessageDialog(

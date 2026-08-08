@@ -161,6 +161,103 @@ class TestGenerate(unittest.TestCase):
     def test_does_not_repeat_itself(self):
         self.assertEqual(len({hoard.generate(24) for _ in range(50)}), 50)
 
+    def test_each_character_class_can_be_switched_off(self):
+        import string
+        cases = (
+            ("upper", string.ascii_uppercase),
+            ("lower", string.ascii_lowercase),
+            ("digits", string.digits),
+            ("symbols", hoard.SYMBOLS),
+        )
+        for flag, banned in cases:
+            with self.subTest(off=flag):
+                pw = hoard.generate(200, **{flag: False})
+                self.assertFalse(set(pw) & set(banned), f"{flag} was excluded but appeared")
+
+    def test_every_enabled_class_is_actually_present(self):
+        """
+        The bug in most generators. Picking uniformly from a combined pool means
+        a short password can contain no digit at all, and then the site you were
+        generating it for rejects it. Asking for digits has to mean you get one.
+        """
+        import string
+        for _ in range(200):
+            pw = hoard.generate(8)
+            self.assertTrue(set(pw) & set(string.ascii_uppercase), pw)
+            self.assertTrue(set(pw) & set(string.ascii_lowercase), pw)
+            self.assertTrue(set(pw) & set(string.digits), pw)
+            self.assertTrue(set(pw) & set(hoard.SYMBOLS), pw)
+
+    def test_ambiguous_characters_can_be_dropped(self):
+        pw = hoard.generate(300, exclude_ambiguous=True)
+        self.assertFalse(set(pw) & set(hoard.AMBIGUOUS))
+
+    def test_asking_for_nothing_is_an_error_not_an_empty_password(self):
+        with self.assertRaises(hoard.HoardError):
+            hoard.generate(20, upper=False, lower=False, digits=False, symbols=False)
+
+    def test_too_short_to_hold_one_of_each_is_an_error(self):
+        """Silently dropping a class the user asked for would be worse."""
+        with self.assertRaises(hoard.HoardError) as ctx:
+            hoard.generate(3)
+        self.assertIn("4", str(ctx.exception))
+
+    def test_the_first_characters_are_not_predictable_by_class(self):
+        """
+        One from each class is picked first, so they must be shuffled. If the
+        shuffle were missing every password would start upper, lower, digit,
+        symbol, which is a pattern an attacker can exploit.
+        """
+        import string
+        firsts = {hoard.generate(24)[0] for _ in range(200)}
+        self.assertGreater(len(firsts & set(string.ascii_lowercase)), 0)
+        self.assertGreater(len(firsts & set(string.digits)), 0)
+
+
+class TestPassphrase(unittest.TestCase):
+    """
+    Worth more than any amount of turning up Argon2. Measured on this machine,
+    quadrupling the memory cost buys about 8x against an attacker and costs a
+    second per unlock. One more word buys 7776x and costs nothing.
+    """
+
+    def test_the_word_count_is_respected(self):
+        for n in (4, 6, 10):
+            self.assertEqual(len(hoard.passphrase(n).split("-")), n)
+
+    def test_the_separator_is_respected(self):
+        self.assertEqual(len(hoard.passphrase(5, separator=" ").split(" ")), 5)
+
+    def test_every_word_comes_from_the_list(self):
+        words = set(hoard.load_words())
+        for word in hoard.passphrase(20).split("-"):
+            self.assertIn(word, words)
+
+    def test_it_does_not_repeat_itself(self):
+        self.assertEqual(len({hoard.passphrase(6) for _ in range(50)}), 50)
+
+    def test_the_list_is_the_size_the_entropy_claim_depends_on(self):
+        """
+        7776 is 6**5, the diceware size, and the whole bits-per-word figure
+        rests on it. A truncated wordlist would silently weaken every
+        passphrase while still looking fine.
+        """
+        self.assertEqual(len(hoard.load_words()), 7776)
+        self.assertEqual(len(set(hoard.load_words())), 7776, "the list has duplicates")
+
+    def test_the_entropy_figure_is_right(self):
+        import math
+        self.assertAlmostEqual(hoard.passphrase_bits(6), 6 * math.log2(7776), places=6)
+
+    def test_capitalise_and_number_are_optional_extras(self):
+        phrase = hoard.passphrase(4, capitalise=True, number=True)
+        self.assertTrue(any(c.isupper() for c in phrase))
+        self.assertTrue(any(c.isdigit() for c in phrase))
+
+    def test_asking_for_no_words_is_an_error(self):
+        with self.assertRaises(hoard.HoardError):
+            hoard.passphrase(0)
+
 
 class TestCli(Base):
     def test_gen_prints_a_password(self):

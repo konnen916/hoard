@@ -1,2 +1,3 @@
 hoard.py usr/lib/hoard
+wordlist.txt usr/share/hoard
 packaging/hoard usr/bin

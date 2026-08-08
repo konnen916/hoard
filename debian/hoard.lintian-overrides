@@ -1,0 +1,4 @@
+# Not documentation. It is the diceware wordlist the passphrase generator draws
+# from, so it has to sit where the program can read it at runtime rather than in
+# usr/share/doc. The tag keys on the .txt extension.
+hoard: package-contains-documentation-outside-usr-share-doc [usr/share/hoard/wordlist.txt]

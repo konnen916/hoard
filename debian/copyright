@@ -7,6 +7,14 @@ Files: *
 Copyright: 2026 konnen916
 License: MIT
 
+Files: wordlist.txt
+Copyright: 2016 Electronic Frontier Foundation
+License: CC-BY-3.0
+Comment: The EFF large wordlist, used for diceware passphrases. Obtained from
+ https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt with the dice
+ roll column removed. It is exactly 7776 words, which is what the stated
+ entropy per word depends on.
+
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -25,3 +33,9 @@ License: MIT
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  SOFTWARE.
+
+License: CC-BY-3.0
+ This work is licensed under the Creative Commons Attribution 3.0 License. To
+ view a copy of this license, visit
+ https://creativecommons.org/licenses/by/3.0/ or send a letter to Creative
+ Commons, PO Box 1866, Mountain View, CA 94042, USA.

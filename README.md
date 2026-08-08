@@ -108,6 +108,7 @@ hoard edit github -u newname        # change one field, keep the rest
 hoard mv githib github              # fix a typo in a name
 hoard rm oldforum
 hoard gen -n 40                     # just a password, no vault involved
+hoard gen -w 6                      # or a passphrase, which is stronger
 hoard passwd                        # change the master password
 hoard import export.csv             # bring everything over from somewhere else
 ```
@@ -166,6 +167,31 @@ if it has a bug the bug is about pixels.
   the list of sites you have accounts on is not something to paste in public.
 
 Keys: `ctrl+F` search, `ctrl+C` copy, `ctrl+L` or `Esc` lock.
+
+## Passphrases
+
+```bash
+hoard gen -w 6
+# grading-guise-hatchling-heat-encroach-sizably
+```
+
+Six words from the EFF list is 77 bits. That is the single strongest thing hoard
+offers, and it is worth being specific about why.
+
+Measured on one machine, quadrupling the Argon2 memory cost from 64 MiB to 256
+MiB buys about **8x** against someone cracking your vault offline, and costs you
+**a second on every unlock**. Adding one word to a passphrase buys **7776x** and
+costs you nothing, because you still only remember a phrase.
+
+So hoard does not ship a bigger number in its key derivation. It ships a
+generator that makes the strong choice the easy one, and states the entropy in
+bits rather than drawing a coloured bar that means whatever its author felt
+like.
+
+The wordlist is the EFF large wordlist, 7776 words, shipped as a data file
+rather than derived from whatever `/usr/share/dict` happens to hold. The entropy
+claim depends on the list being exactly that list, and a passphrase whose
+strength you cannot state is worse than none.
 
 ## Threat model
 
@@ -240,6 +266,13 @@ the entire argument for writing them.
 
 Issues and patches welcome. If you find something wrong with the crypto, please
 open an issue rather than being polite about it.
+
+## Credits
+
+`wordlist.txt` is the [EFF large wordlist](https://www.eff.org/dice), by the
+Electronic Frontier Foundation, used under
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Everything else here
+is mine.
 
 ## License
 [MIT](LICENSE). Do what you want with it.

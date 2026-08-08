@@ -26,6 +26,7 @@ import getpass
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import shutil
@@ -220,13 +221,134 @@ def write_vault(path: Path, vault: dict[str, Any], password: str) -> None:
 
 # ---------------------------------------------------------------- helpers
 
-ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{};:,.?"
+SYMBOLS = "!@#$%^&*()-_=+[]{};:,.?"
+# Characters that look like each other in most fonts. Optional, because
+# excluding them costs a little entropy and only helps if you retype passwords.
+AMBIGUOUS = "lI1O0"
+ALPHABET = string.ascii_letters + string.digits + SYMBOLS
 
 
-def generate(length: int = 24, symbols: bool = True) -> str:
-    pool = ALPHABET if symbols else string.ascii_letters + string.digits
+def character_pools(upper: bool = True, lower: bool = True, digits: bool = True,
+                    symbols: bool = True, exclude_ambiguous: bool = False) -> list[str]:
+    pools = []
+    if upper:
+        pools.append(string.ascii_uppercase)
+    if lower:
+        pools.append(string.ascii_lowercase)
+    if digits:
+        pools.append(string.digits)
+    if symbols:
+        pools.append(SYMBOLS)
+    if exclude_ambiguous:
+        pools = [p.translate(str.maketrans("", "", AMBIGUOUS)) for p in pools]
+    return [p for p in pools if p]
+
+
+def password_bits(length: int, **options) -> float:
+    """
+    Entropy in bits, so the interface can state it rather than imply it with a
+    coloured bar that means whatever the author felt like.
+    """
+    size = sum(len(p) for p in character_pools(**options))
+    return length * math.log2(size) if size else 0.0
+
+
+def generate(length: int = 24, upper: bool = True, lower: bool = True,
+             digits: bool = True, symbols: bool = True,
+             exclude_ambiguous: bool = False) -> str:
+    """
+    Generate a password containing at least one of every class asked for.
+
+    Picking uniformly from one combined pool is the usual approach and it is
+    subtly wrong: a short password can then contain no digit at all, and the
+    site you generated it for rejects it. So one character comes from each
+    selected class first and the rest are filled from everything.
+    """
+    pools = character_pools(upper, lower, digits, symbols, exclude_ambiguous)
+    if not pools:
+        raise HoardError("nothing left to choose from, enable at least one character set")
+    if length < len(pools):
+        raise HoardError(
+            f"length {length} cannot hold one of each of {len(pools)} character sets"
+        )
+
     # secrets, not random. random is seeded predictably and is for dice games.
-    return "".join(secrets.choice(pool) for _ in range(length))
+    chars = [secrets.choice(pool) for pool in pools]
+    everything = "".join(pools)
+    chars += [secrets.choice(everything) for _ in range(length - len(chars))]
+
+    # Fisher-Yates with secrets. Without a shuffle every password would begin
+    # upper, lower, digit, symbol in that order, which is a pattern worth
+    # nothing to the user and something to an attacker. random.shuffle would
+    # undo the point of using secrets above it.
+    for i in range(len(chars) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
+    return "".join(chars)
+
+
+# The EFF large wordlist, 7776 words, which is 6**5 and therefore exactly five
+# dice rolls per word. Curated so no word is a prefix of another and none are
+# confusable, which is what makes a passphrase typeable as well as strong.
+#
+# Shipped as a data file rather than embedded, because the whole claim about
+# entropy rests on the list being exactly this list. Deriving one from whatever
+# /usr/share/dict happens to hold would make the strength depend on the machine,
+# and a passphrase whose strength you cannot state is worse than none.
+# Beside the script when running from a clone, and in /usr/share when packaged,
+# because architecture independent data does not belong in /usr/lib.
+WORDLIST_LOCATIONS = (
+    Path(__file__).resolve().parent / "wordlist.txt",
+    Path("/usr/share/hoard/wordlist.txt"),
+)
+_words: list[str] | None = None
+
+
+def load_words() -> list[str]:
+    global _words
+    if _words is None:
+        found = next((p for p in WORDLIST_LOCATIONS if p.exists()), None)
+        if found is None:
+            raise HoardError(
+                "no wordlist found, looked in "
+                + " and ".join(str(p) for p in WORDLIST_LOCATIONS)
+            )
+        try:
+            _words = [w.strip() for w in found.read_text("utf-8").splitlines() if w.strip()]
+        except OSError as exc:
+            raise HoardError(f"cannot read the wordlist at {found}: {exc}") from None
+        if len(_words) < 1000:
+            raise HoardError(f"the wordlist at {found} looks truncated")
+    return _words
+
+
+def passphrase_bits(words: int) -> float:
+    """Entropy in bits, so the interface can state it rather than imply it."""
+    return words * math.log2(len(load_words()))
+
+
+def passphrase(words: int = 6, separator: str = "-", capitalise: bool = False,
+               number: bool = False) -> str:
+    """
+    A diceware passphrase.
+
+    This is the strongest thing hoard can offer. Measured on one machine,
+    quadrupling the Argon2 memory cost buys roughly 8x against an attacker and
+    costs a second on every unlock. One more word here buys 7776x and costs
+    nothing, because the user still only has to remember a phrase.
+    """
+    if words < 1:
+        raise HoardError("a passphrase needs at least one word")
+    pool = load_words()
+    chosen = [secrets.choice(pool) for _ in range(words)]
+    if capitalise:
+        chosen = [w.capitalize() for w in chosen]
+    phrase = separator.join(chosen)
+    if number:
+        # Appended rather than substituted into a word. Leetspeak inside words
+        # is what people think helps and it does not; crackers expand it.
+        phrase += separator + str(secrets.randbelow(100)).zfill(2)
+    return phrase
 
 
 def clipboard_read() -> str | None:
@@ -767,7 +889,18 @@ def cmd_import(args: argparse.Namespace) -> int:
 
 
 def cmd_gen(args: argparse.Namespace) -> int:
-    print(generate(args.length, symbols=not args.no_symbols))
+    if args.words:
+        print(passphrase(args.words, separator=args.separator,
+                         capitalise=args.capitalise, number=args.number))
+        return 0
+    print(generate(
+        args.length,
+        upper=not args.no_upper,
+        lower=not args.no_lower,
+        digits=not args.no_digits,
+        symbols=not args.no_symbols,
+        exclude_ambiguous=args.no_ambiguous,
+    ))
     return 0
 
 
@@ -849,7 +982,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("gen", help="generate a password without touching the vault")
     s.add_argument("-n", "--length", type=int, default=24)
-    s.add_argument("--no-symbols", action="store_true")
+    s.add_argument("--no-upper", action="store_true", help="no capital letters")
+    s.add_argument("--no-lower", action="store_true", help="no small letters")
+    s.add_argument("--no-digits", action="store_true", help="no numbers")
+    s.add_argument("--no-symbols", action="store_true", help="letters and numbers only")
+    s.add_argument("--no-ambiguous", action="store_true",
+                   help="drop lI1O0, which look alike in most fonts")
+    s.add_argument("-w", "--words", type=int, default=0,
+                   help="make a passphrase of this many words instead")
+    s.add_argument("--separator", default="-", help="what goes between the words")
+    s.add_argument("--capitalise", action="store_true", help="Capitalise Each Word")
+    s.add_argument("--number", action="store_true", help="append two digits")
     s.set_defaults(func=cmd_gen)
 
     s = sub.add_parser("passwd", help="change the master password")
