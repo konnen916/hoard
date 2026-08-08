@@ -38,6 +38,8 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
+__version__ = "0.1.0"
+
 MAGIC = b"HOARD1"
 KEY_LEN = 32
 SALT_LEN = 16
@@ -449,6 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="hoard",
         description="a password manager that is one file you can read",
     )
+    p.add_argument("--version", action="version", version=f"hoard {__version__}")
     p.add_argument("--vault", default=str(DEFAULT_VAULT), help=f"vault path (default {DEFAULT_VAULT})")
     sub = p.add_subparsers(dest="command", required=True)
 

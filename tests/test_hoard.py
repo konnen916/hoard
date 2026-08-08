@@ -389,5 +389,20 @@ class TestMv(CliBase):
             self.assertEqual(hoard.main(["--vault", str(self.path), "mv", "bank", "bank"]), 1)
 
 
+class TestVersion(unittest.TestCase):
+    def test_version_flag_prints_it_and_exits_cleanly(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+        out = StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            hoard.main(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn(hoard.__version__, out.getvalue())
+
+    def test_version_is_three_numbers(self):
+        """The debian changelog derives from this, and dpkg is fussy about versions."""
+        self.assertRegex(hoard.__version__, r"^\d+\.\d+\.\d+$")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
