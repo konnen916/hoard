@@ -49,6 +49,6 @@ Description: encrypted password vault in one readable file (GTK interface)
  .
  It depends on python3-argon2 specifically, rather than accepting either
  backend the way the command line tool does. The window derives keys on a
- worker thread so it can keep repainting, and cryptography's Argon2id holds the
- GIL for the whole derivation, which would stop the interface anyway. argon2-cffi
- releases it.
+ worker thread so it can keep repainting, and cryptography's Argon2id holds
+ the GIL for the whole derivation, which would stall the interface anyway.
+ argon2-cffi releases it.
