@@ -72,12 +72,21 @@ hoard init                          # make the vault
 hoard add github -u konnen916 -g    # generate and store
 hoard add oldforum -u me            # or type your own
 hoard ls                            # what is in there
+hoard ls git                        # filter on name, username or url
+hoard ls --json                     # the same list for scripts, no passwords
 hoard get github                    # to the clipboard, wiped after 20s
 hoard get github --show             # or straight to the terminal
+hoard edit github -u newname        # change one field, keep the rest
+hoard mv githib github              # fix a typo in a name
 hoard rm oldforum
 hoard gen -n 40                     # just a password, no vault involved
 hoard passwd                        # change the master password
 ```
+
+The clipboard wipe only fires if the clipboard still holds the password hoard
+put there, so copying something else in the meantime does not cost you it. If
+the clipboard cannot be read back at all, hoard clears it anyway, on the basis
+that a password left sitting in one is the worse outcome.
 
 Vault lives at `~/.hoard/vault`, or wherever `$HOARD_VAULT` points.
 
