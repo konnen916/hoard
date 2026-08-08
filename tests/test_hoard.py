@@ -6,6 +6,7 @@ failing is annoying and the crypto failing is a disaster.
 """
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -176,6 +177,30 @@ class TestCli(Base):
         with redirect_stderr(err):
             code = hoard.main(["--vault", str(Path(self.tmp.name) / "absent"), "ls"])
         self.assertEqual(code, 1)
+
+
+class TestClipboardClear(unittest.TestCase):
+    """
+    The old clear fired unconditionally, so anything copied inside the window
+    was destroyed with no error and nothing pointing at hoard as the cause.
+    """
+
+    def digest(self, text: str) -> bytes:
+        return hashlib.sha256(text.encode("utf-8")).digest()
+
+    def test_clears_when_the_secret_is_still_there(self):
+        self.assertTrue(hoard.should_clear("hunter2", self.digest("hunter2")))
+
+    def test_leaves_the_clipboard_alone_when_it_changed(self):
+        """Copying a url in the meantime must not cost you the url."""
+        self.assertFalse(hoard.should_clear("https://example.com", self.digest("hunter2")))
+
+    def test_clears_when_the_clipboard_cannot_be_read(self):
+        """Fail closed. A password left sitting there is worse than lost text."""
+        self.assertTrue(hoard.should_clear(None, self.digest("hunter2")))
+
+    def test_an_emptied_clipboard_is_not_our_secret(self):
+        self.assertFalse(hoard.should_clear("", self.digest("hunter2")))
 
 
 if __name__ == "__main__":

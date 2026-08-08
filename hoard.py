@@ -21,6 +21,8 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -173,6 +175,40 @@ def generate(length: int = 24, symbols: bool = True) -> str:
     return "".join(secrets.choice(pool) for _ in range(length))
 
 
+def clipboard_read() -> str | None:
+    """Read the clipboard back. None means we could not, which is not the same as empty."""
+    for cmd in (["wl-paste", "-n"], ["xclip", "-selection", "clipboard", "-o"]):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            done = subprocess.run(cmd, capture_output=True, check=True)
+        except Exception:
+            continue
+        return done.stdout.decode("utf-8", "replace")
+    return None
+
+
+def should_clear(current: str | None, digest: bytes) -> bool:
+    """
+    Clear only what we put there, so copying something else in the meantime
+    does not cost you it.
+
+    If the clipboard cannot be read at all we clear anyway. That is a deliberate
+    trade: a password left sitting in the clipboard is worse than losing
+    whatever replaced it.
+    """
+    if current is None:
+        return True
+    return hmac.compare_digest(hashlib.sha256(current.encode("utf-8")).digest(), digest)
+
+
+def clipboard_watch(digest: bytes, clear_cmd: list[str], seconds: int) -> None:
+    """Runs in the detached child. Sleeps, then clears if the secret survived."""
+    time.sleep(seconds)
+    if should_clear(clipboard_read(), digest):
+        subprocess.run(clear_cmd, input=b"", check=False)
+
+
 def clipboard_copy(text: str, seconds: int = CLIP_SECONDS) -> bool:
     for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
         if shutil.which(cmd[0]) is None:
@@ -182,14 +218,22 @@ def clipboard_copy(text: str, seconds: int = CLIP_SECONDS) -> bool:
         except Exception:
             continue
         clear = ["wl-copy", "--clear"] if cmd[0] == "wl-copy" else ["xclip", "-selection", "clipboard"]
+        # The digest goes over stdin, never argv. Anything in argv is readable
+        # in ps by every user on the machine, and this is a password.
+        child = (
+            "import sys;"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r});"
+            "import hoard;"
+            f"hoard.clipboard_watch(sys.stdin.buffer.read(), {clear!r}, {seconds})"
+        )
         # Detached so the shell returns immediately.
-        subprocess.Popen(
-            [sys.executable, "-c",
-             "import subprocess,sys,time;"
-             f"time.sleep({seconds});"
-             f"subprocess.run({clear!r}, input=b'', check=False)"],
+        proc = subprocess.Popen(
+            [sys.executable, "-c", child],
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
         )
+        proc.stdin.write(hashlib.sha256(text.encode("utf-8")).digest())
+        proc.stdin.close()
         return True
     return False
 
