@@ -304,14 +304,44 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def matches(name: str, entry: dict[str, Any], pattern: str) -> bool:
+    """
+    Name, username and url only. Notes are freeform and collect recovery
+    codes, so making them searchable invites putting more in them and then
+    printing more of them.
+    """
+    needle = pattern.lower()
+    fields = (name, entry.get("username") or "", entry.get("url") or "")
+    return any(needle in field.lower() for field in fields)
+
+
 def cmd_ls(args: argparse.Namespace) -> int:
     path = Path(args.vault)
     require_vault(path)
     pw = ask_password()
     vault = read_vault(path, pw)
     entries = vault.get("entries", {})
+    if args.pattern:
+        entries = {n: e for n, e in entries.items() if matches(n, e, args.pattern)}
+
+    if args.json:
+        # No password field, deliberately. See the test that guards this.
+        print(json.dumps(
+            [
+                {
+                    "name": name,
+                    "username": entries[name].get("username") or "",
+                    "url": entries[name].get("url") or "",
+                    "updated": entries[name].get("updated"),
+                }
+                for name in sorted(entries)
+            ],
+            indent=2,
+        ))
+        return 0
+
     if not entries:
-        print("vault is empty")
+        print("no matching entries" if args.pattern else "vault is empty")
         return 0
     width = max(len(n) for n in entries)
     for name in sorted(entries):
@@ -381,7 +411,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--show", action="store_true", help="print it instead of copying")
     s.set_defaults(func=cmd_get)
 
-    s = sub.add_parser("ls", help="list entry names")
+    s = sub.add_parser("ls", help="list entries, optionally filtered")
+    s.add_argument("pattern", nargs="?", default="", help="only show entries matching this")
+    s.add_argument("--json", action="store_true", help="machine readable output, without passwords")
     s.set_defaults(func=cmd_ls)
 
     s = sub.add_parser("rm", help="remove an entry")

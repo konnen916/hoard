@@ -203,5 +203,87 @@ class TestClipboardClear(unittest.TestCase):
         self.assertFalse(hoard.should_clear("", self.digest("hunter2")))
 
 
+class CliBase(Base):
+    """Drives main() with a seeded vault and no password prompt."""
+
+    def setUp(self):
+        super().setUp()
+        self._ask = hoard.ask_password
+        hoard.ask_password = lambda *a, **k: "pw"
+
+    def tearDown(self):
+        hoard.ask_password = self._ask
+        super().tearDown()
+
+    def seed(self, entries):
+        hoard.write_vault(self.path, {"entries": entries}, "pw")
+
+    def entries(self):
+        return hoard.read_vault(self.path, "pw")["entries"]
+
+    def invoke(self, *argv):
+        # Not called run(). TestCase.run is what unittest calls to execute the
+        # test, and shadowing it breaks the whole suite in a confusing way.
+        from io import StringIO
+        from contextlib import redirect_stdout
+        out = StringIO()
+        with redirect_stdout(out):
+            code = hoard.main(["--vault", str(self.path), *argv])
+        return code, out.getvalue()
+
+
+class TestLs(CliBase):
+    def setUp(self):
+        super().setUp()
+        self.seed({
+            "github": {"password": "a", "username": "konnen916", "url": "github.com", "note": "", "updated": 1},
+            "bank": {"password": "b", "username": "luiz", "url": "caixa.gov.br", "note": "", "updated": 2},
+        })
+
+    def test_pattern_matches_the_name(self):
+        code, out = self.invoke("ls", "git")
+        self.assertEqual(code, 0)
+        self.assertIn("github", out)
+        self.assertNotIn("bank", out)
+
+    def test_pattern_matches_the_username(self):
+        _, out = self.invoke("ls", "konnen")
+        self.assertIn("github", out)
+        self.assertNotIn("bank", out)
+
+    def test_pattern_matches_the_url(self):
+        _, out = self.invoke("ls", "caixa")
+        self.assertIn("bank", out)
+        self.assertNotIn("github", out)
+
+    def test_pattern_is_case_insensitive(self):
+        _, out = self.invoke("ls", "GITHUB")
+        self.assertIn("github", out)
+
+    def test_no_match_says_so(self):
+        _, out = self.invoke("ls", "nothing-like-this")
+        self.assertIn("no matching entries", out)
+
+    def test_json_never_contains_a_password(self):
+        """
+        JSON output exists to be piped and pasted around. A scripting
+        convenience that exports every secret is the whole reason to have
+        this test standing rather than checking it once by eye.
+        """
+        _, out = self.invoke("ls", "--json")
+        self.assertNotIn("password", out)
+        for row in json.loads(out):
+            self.assertNotIn("password", row)
+            self.assertEqual(set(row), {"name", "username", "url", "updated"})
+
+    def test_json_respects_the_pattern(self):
+        _, out = self.invoke("ls", "--json", "git")
+        self.assertEqual([r["name"] for r in json.loads(out)], ["github"])
+
+    def test_json_with_no_matches_is_still_valid_json(self):
+        _, out = self.invoke("ls", "--json", "nothing-like-this")
+        self.assertEqual(json.loads(out), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
