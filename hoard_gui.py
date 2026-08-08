@@ -15,6 +15,7 @@ import hashlib
 import os
 import platform
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -52,6 +53,29 @@ def icon_button(icon: str, tooltip: str, fallback: str) -> Gtk.Button:
         btn.set_label(fallback)
     btn.set_tooltip_text(tooltip)
     return btn
+
+
+def run_off_main(work, on_done, on_error, dispatch) -> threading.Thread:
+    """
+    Run work() on a worker thread and hand the outcome to dispatch().
+
+    Nothing inside work() may touch a widget or read window state. GTK is not
+    thread safe, so results come back through dispatch, which is GLib.idle_add
+    in the application and a synchronous stub in the tests.
+
+    Returns the thread so tests can join it. The application ignores it.
+    """
+    def worker() -> None:
+        try:
+            result = work()
+        except Exception as exc:
+            dispatch(on_error, exc)
+        else:
+            dispatch(on_done, result)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return thread
 
 
 class Log:
