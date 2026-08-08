@@ -83,5 +83,41 @@ class TestRunOffMain(unittest.TestCase):
         t.join(5)
 
 
+@unittest.skipIf(hoard_gui is None, "needs pygobject and gtk3")
+class TestMainLoopKeepsTurning(unittest.TestCase):
+    """
+    The whole point of the change. If the derive runs on the main thread the
+    loop does not turn while it happens, so counting iterations measures the
+    actual property rather than something adjacent to it.
+    """
+
+    def test_the_loop_runs_during_a_key_derivation(self):
+        from gi.repository import GLib
+
+        import hoard
+
+        ticks = []
+        loop = GLib.MainLoop()
+
+        def tick():
+            ticks.append(1)
+            return True
+
+        GLib.timeout_add(5, tick)
+
+        def work():
+            # The real cost, not a sleep. A sleep would pass even if the code
+            # were wrong about which thread it runs on.
+            return hoard.derive_key("pw", b"x" * 16, hoard.ARGON)
+
+        hoard_gui.run_off_main(work, lambda v: loop.quit(), lambda e: loop.quit(),
+                               GLib.idle_add)
+        GLib.timeout_add_seconds(10, lambda: (loop.quit(), False)[1])
+        loop.run()
+
+        self.assertGreater(len(ticks), 5,
+                           "the main loop stalled, the derive is still blocking it")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

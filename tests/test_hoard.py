@@ -444,7 +444,16 @@ class TestCrossBackendVaults(unittest.TestCase):
     undone inside the one already running the tests.
     """
 
-    BLOCK = "import sys; sys.modules['cryptography.hazmat.primitives.kdf.argon2'] = None\n"
+    # Setting a module to None in sys.modules makes importing it raise, which
+    # is how each backend is forced. argon2-cffi is the preferred one, so it
+    # needs nothing blocked; selecting cryptography means hiding argon2 the way
+    # a machine without it would.
+    BLOCK = {
+        "argon2-cffi": "",
+        "cryptography": ("import sys\n"
+                         "for _m in ('argon2', 'argon2.low_level', 'argon2.exceptions'):\n"
+                         "    sys.modules[_m] = None\n"),
+    }
 
     def setUp(self):
         try:
@@ -460,7 +469,7 @@ class TestCrossBackendVaults(unittest.TestCase):
 
     def script(self, backend, body):
         return (
-            (self.BLOCK if backend == "argon2-cffi" else "")
+            self.BLOCK[backend]
             + f"import sys; sys.path.insert(0, {str(ROOT)!r})\n"
             + "import hoard\n"
             + f"assert hoard.KDF_BACKEND == {backend!r}, 'wrong backend: ' + hoard.KDF_BACKEND\n"
@@ -494,6 +503,19 @@ class TestCrossBackendVaults(unittest.TestCase):
 class TestKdfBackend(unittest.TestCase):
     def test_the_backend_in_use_is_named(self):
         self.assertIn(hoard.KDF_BACKEND, {"cryptography", "argon2-cffi"})
+
+    def test_argon2_cffi_is_preferred_when_it_is_available(self):
+        """
+        Not a style preference. cryptography's Argon2id holds the GIL for the
+        whole derivation, so deriving on a worker thread stops every other
+        Python thread and the window freezes anyway. argon2-cffi releases it.
+        Flipping this order back would silently undo the non blocking window.
+        """
+        try:
+            import argon2  # noqa: F401
+        except ImportError:
+            self.skipTest("argon2-cffi not installed, nothing to prefer")
+        self.assertEqual(hoard.KDF_BACKEND, "argon2-cffi")
 
     def test_impossible_parameters_raise_valueerror_on_either_backend(self):
         """

@@ -133,6 +133,10 @@ class HoardWindow(Gtk.Window):
         self.revealed = False
         self.log = Log()
         self._autolock: int | None = None
+        # Bumped on every lock. A result whose generation no longer matches
+        # arrived after the vault closed and must not repaint the window.
+        self._generation = 0
+        self._busy = False
 
         self.set_default_size(900, 580)
         self.set_position(Gtk.WindowPosition.CENTER)
@@ -320,26 +324,65 @@ class HoardWindow(Gtk.Window):
     def entries(self) -> dict:
         return (self.vault or {}).get("entries", {})
 
+    def _set_busy(self, busy: bool, button: Gtk.Button | None = None,
+                  label: str | None = None) -> None:
+        """
+        Mark an operation in flight, and optionally disable the control that
+        started it.
+
+        The button is optional because only unlock has one that outlives the
+        operation. The dialogs destroy themselves before the write finishes and
+        the Delete button is rebuilt by refresh_list, so for those there would
+        be nothing left to re-enable and the busy flag alone stops a second
+        operation starting.
+
+        No spinner: these take a quarter second, and something that appears and
+        vanishes that fast reads as a glitch rather than as progress.
+        """
+        self._busy = busy
+        if button is not None:
+            button.set_sensitive(not busy)
+            if label is not None:
+                button.set_label(label)
+
     def unlock(self) -> None:
+        if self._busy:
+            return
         pw = self.pw_entry.get_text()
         if not pw:
             self.lock_error.set_text("Enter your master password.")
             return
-        try:
-            self.vault = hoard.read_vault(self.vault_path, pw)
-        except hoard.HoardError as exc:
-            self.lock_error.set_text(str(exc)[0].upper() + str(exc)[1:] + ".")
-            self.log.add("Unlock failed")
-            return
-        self.password = pw
-        self.pw_entry.set_text("")
+
+        # Captured before the thread starts. Reading self from a worker means
+        # racing autolock, which sets password to None underneath it.
+        path, generation = self.vault_path, self._generation
         self.lock_error.set_text("")
-        self.note("Vault unlocked")
-        self.refresh_list()
-        self.stack.set_visible_child_name("vault")
-        self.reset_autolock()
+        self._set_busy(True, self.unlock_btn, "Unlocking")
+
+        def done(vault: dict) -> None:
+            self._set_busy(False, self.unlock_btn, "Unlock")
+            if generation != self._generation:
+                return
+            self.vault = vault
+            self.password = pw
+            self.pw_entry.set_text("")
+            self.note("Vault unlocked")
+            self.refresh_list()
+            self.stack.set_visible_child_name("vault")
+            self.reset_autolock()
+
+        def failed(exc: Exception) -> None:
+            self._set_busy(False, self.unlock_btn, "Unlock")
+            if generation != self._generation:
+                return
+            message = str(exc)
+            self.lock_error.set_text(message[0].upper() + message[1:] + ".")
+            self.log.add("Unlock failed")
+
+        run_off_main(lambda: hoard.read_vault(path, pw), done, failed, GLib.idle_add)
 
     def lock(self, why: str = "Locked") -> None:
+        self._generation += 1
         self.password = None
         self.vault = None
         self.selected = None
