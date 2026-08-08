@@ -110,6 +110,7 @@ hoard rm oldforum
 hoard gen -n 40                     # just a password, no vault involved
 hoard gen -w 6                      # or a passphrase, which is stronger
 hoard passwd                        # change the master password
+hoard upgrade --check               # is this vault below the current cost?
 hoard import export.csv             # bring everything over from somewhere else
 ```
 
@@ -167,6 +168,25 @@ if it has a bug the bug is about pixels.
   the list of sites you have accounts on is not something to paste in public.
 
 Keys: `ctrl+F` search, `ctrl+C` copy, `ctrl+L` or `Esc` lock.
+
+## When the cost goes up
+
+The header records the Argon2id parameters each vault was written with, which
+means raising the default does nothing to a vault that already exists. It keeps
+its old cost until something rewrites it, and nothing would tell you.
+
+```bash
+hoard upgrade --check   # reports both, exits 1 if the vault is behind
+hoard upgrade           # re-encrypts at the current cost
+```
+
+Every command that opens the vault prints one line to stderr while it is behind,
+and stops once you have upgraded. Stderr so it never contaminates piped output.
+
+"Behind" means any single factor is lower, not a product of them. A product would
+call m=16 t=10 equivalent to m=64 t=3, and it is not: the memory cost is what
+makes a GPU farm lose its advantage, so trading it for iterations quietly gives
+that up.
 
 ## Passphrases
 

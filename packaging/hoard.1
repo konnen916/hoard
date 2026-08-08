@@ -61,6 +61,20 @@ Generate a password and print it, without touching the vault.
 .TP
 .B passwd
 Change the master password and re\-encrypt the vault under it.
+.TP
+.B upgrade
+Re\-encrypt the vault at the current Argon2id cost. A vault keeps the parameters
+it was written with, so raising the defaults does nothing until this is run.
+.B \-\-check
+reports both and exits non zero if the vault is behind, changing nothing.
+.TP
+.BI import " FILE"
+Read entries from another password manager. The format is detected from the
+file, and
+.B \-\-format
+overrides that. Use
+.B \-\-dry\-run
+to see what would happen first.
 .SH OPTIONS
 .TP
 .BI \-\-vault " PATH"

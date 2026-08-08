@@ -145,6 +145,55 @@ class TestStorage(Base):
         self.assertIn("hoard init", str(ctx.exception))
 
 
+class TestParameterUpgrade(Base):
+    """
+    Raising the default does nothing on its own. The header records the
+    parameters a vault was written with, so an old vault keeps its old cost
+    until something rewrites it, and nothing tells the owner.
+    """
+
+    def test_parameters_can_be_read_without_the_password(self):
+        """
+        The header is plaintext for exactly this reason. Checking whether a
+        vault is stale should not require unlocking it.
+        """
+        hoard.write_vault(self.path, {"entries": {}}, "pw")
+        self.assertEqual(hoard.vault_params(self.path), dict(CHEAP))
+
+    def test_weaker_is_any_factor_below_current(self):
+        current = {"m": 64, "t": 3, "p": 4}
+        self.assertFalse(hoard.params_are_weaker(current, current))
+        self.assertTrue(hoard.params_are_weaker({"m": 32, "t": 3, "p": 4}, current))
+        self.assertTrue(hoard.params_are_weaker({"m": 64, "t": 2, "p": 4}, current))
+        self.assertTrue(hoard.params_are_weaker({"m": 64, "t": 3, "p": 2}, current))
+
+    def test_a_stronger_vault_is_not_called_weak(self):
+        """Somebody who raised their own cost must not be told to downgrade."""
+        self.assertFalse(hoard.params_are_weaker({"m": 999, "t": 9, "p": 9},
+                                                 {"m": 64, "t": 3, "p": 4}))
+
+    def test_memory_and_time_do_not_trade_off_against_each_other(self):
+        """
+        A single product would call m=16 t=10 equivalent to m=64 t=3. They are
+        not: the memory cost is what defeats a gpu farm, and trading it for
+        iterations quietly gives that up.
+        """
+        self.assertTrue(hoard.params_are_weaker({"m": 16, "t": 10, "p": 4},
+                                                {"m": 64, "t": 3, "p": 4}))
+
+    def test_upgrade_rewrites_at_the_current_cost_and_keeps_everything(self):
+        hoard.write_vault(self.path, {"entries": {"a": {"password": "b"}}}, "pw")
+        self.assertEqual(hoard.vault_params(self.path), dict(CHEAP))
+
+        stronger = {"m": 16, "t": 2, "p": 1}
+        hoard.ARGON.clear()
+        hoard.ARGON.update(stronger)
+        hoard.upgrade_vault(self.path, "pw")
+
+        self.assertEqual(hoard.vault_params(self.path), stronger)
+        self.assertEqual(hoard.read_vault(self.path, "pw")["entries"]["a"]["password"], "b")
+
+
 class TestGenerate(unittest.TestCase):
     def test_length_is_respected(self):
         for n in (8, 24, 64):

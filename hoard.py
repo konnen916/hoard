@@ -182,6 +182,25 @@ def unseal(blob: bytes, password: str) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- storage
 
+def warn_if_stale(path: Path) -> None:
+    """
+    One line to stderr when a vault is below the current cost. It goes to
+    stderr so it never contaminates piped output, and it stops the moment the
+    vault is upgraded.
+    """
+    try:
+        stored = vault_params(path)
+    except HoardError:
+        return
+    if params_are_weaker(stored, ARGON):
+        print(
+            f"hoard: this vault was written at m={stored['m']}KiB t={stored['t']} "
+            f"p={stored['p']}, below the current m={ARGON['m']}KiB t={ARGON['t']} "
+            f"p={ARGON['p']}. run: hoard upgrade",
+            file=sys.stderr,
+        )
+
+
 def require_vault(path: Path) -> None:
     """Check this before prompting. Asking for a password we cannot use is rude."""
     if not path.exists():
@@ -191,6 +210,48 @@ def require_vault(path: Path) -> None:
 def read_vault(path: Path, password: str) -> dict[str, Any]:
     require_vault(path)
     return unseal(path.read_bytes(), password)
+
+
+def open_vault(path: Path, password: str) -> dict[str, Any]:
+    """read_vault plus the staleness warning. The commands use this one."""
+    vault = read_vault(path, password)
+    warn_if_stale(path)
+    return vault
+
+
+def vault_params(path: Path) -> dict[str, int]:
+    """
+    Read the KDF parameters a vault was written with, without the password.
+
+    The header is plaintext precisely so this is possible: checking whether a
+    vault is stale should not require unlocking it.
+    """
+    require_vault(path)
+    try:
+        _, header, _ = path.read_bytes().split(b"\n", 2)
+        meta = json.loads(header)
+        return {"m": int(meta["m"]), "t": int(meta["t"]), "p": int(meta["p"])}
+    except Exception as exc:
+        raise HoardError("vault header is corrupt") from exc
+
+
+def params_are_weaker(stored: dict[str, int], current: dict[str, int]) -> bool:
+    """
+    Weaker if any single factor is below current.
+
+    Not a product. A product would call m=16 t=10 equivalent to m=64 t=3, and
+    they are not: the memory cost is what makes a gpu farm lose its advantage,
+    so trading it for iterations quietly gives that up.
+    """
+    return any(stored.get(key, 0) < current[key] for key in ("m", "t", "p"))
+
+
+def upgrade_vault(path: Path, password: str) -> tuple[dict[str, int], dict[str, int]]:
+    """Rewrite at the current cost. Returns what it was and what it now is."""
+    was = vault_params(path)
+    vault = read_vault(path, password)
+    write_vault(path, vault, password)
+    return was, vault_params(path)
 
 
 def write_vault(path: Path, vault: dict[str, Any], password: str) -> None:
@@ -675,7 +736,7 @@ def cmd_add(args: argparse.Namespace) -> int:
     path = Path(args.vault)
     require_vault(path)
     pw = ask_password()
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     entries = vault.setdefault("entries", {})
     if args.name in entries and not args.force:
         raise HoardError(f"{args.name} already exists, use --force to replace it")
@@ -703,7 +764,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
         raise HoardError("-p and -g both given, pick one")
 
     pw = ask_password()
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     entry = vault.get("entries", {}).get(args.name)
     if entry is None:
         raise HoardError(f"no entry called {args.name}, use: hoard add {args.name}")
@@ -740,7 +801,7 @@ def cmd_get(args: argparse.Namespace) -> int:
     path = Path(args.vault)
     require_vault(path)
     pw = ask_password()
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     entry = vault.get("entries", {}).get(args.name)
     if entry is None:
         raise HoardError(f"no entry called {args.name}")
@@ -770,7 +831,7 @@ def cmd_ls(args: argparse.Namespace) -> int:
     path = Path(args.vault)
     require_vault(path)
     pw = ask_password()
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     entries = vault.get("entries", {})
     if args.pattern:
         entries = {n: e for n, e in entries.items() if matches(n, e, args.pattern)}
@@ -808,7 +869,7 @@ def cmd_rm(args: argparse.Namespace) -> int:
     path = Path(args.vault)
     require_vault(path)
     pw = ask_password()
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     if args.name not in vault.get("entries", {}):
         raise HoardError(f"no entry called {args.name}")
     del vault["entries"][args.name]
@@ -824,7 +885,7 @@ def cmd_mv(args: argparse.Namespace) -> int:
         raise HoardError("old and new names are the same")
 
     pw = ask_password()
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     entries = vault.setdefault("entries", {})
     if args.old not in entries:
         raise HoardError(f"no entry called {args.old}")
@@ -834,6 +895,31 @@ def cmd_mv(args: argparse.Namespace) -> int:
     entries[args.new] = entries.pop(args.old)
     write_vault(path, vault, pw)
     print(f"renamed {args.old} to {args.new}")
+    return 0
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    path = Path(args.vault)
+    require_vault(path)
+    stored = vault_params(path)
+
+    if args.check:
+        print(f"vault:   m={stored['m']}KiB t={stored['t']} p={stored['p']}")
+        print(f"current: m={ARGON['m']}KiB t={ARGON['t']} p={ARGON['p']}")
+        if params_are_weaker(stored, ARGON):
+            print("this vault is below the current cost, run: hoard upgrade")
+            return 1
+        print("nothing to do")
+        return 0
+
+    if not params_are_weaker(stored, ARGON) and not args.force:
+        print("already at the current cost, nothing to do")
+        return 0
+
+    pw = ask_password()
+    was, now = upgrade_vault(path, pw)
+    print(f"re-encrypted at m={now['m']}KiB t={now['t']} p={now['p']}, "
+          f"was m={was['m']}KiB t={was['t']} p={was['p']}")
     return 0
 
 
@@ -857,7 +943,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         return 0
 
     pw = ask_password("hoard master password: ")
-    vault = read_vault(path, pw)
+    vault = open_vault(path, pw)
     merged, added, skipped = merge_entries(
         vault.get("entries", {}), incoming, replace=args.replace
     )
@@ -969,6 +1055,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("new")
     s.add_argument("--force", action="store_true", help="replace an existing entry")
     s.set_defaults(func=cmd_mv)
+
+    s = sub.add_parser("upgrade", help="re-encrypt the vault at the current cost")
+    s.add_argument("--check", action="store_true",
+                   help="report the parameters and exit, changing nothing")
+    s.add_argument("--force", action="store_true",
+                   help="rewrite even if it is already current")
+    s.set_defaults(func=cmd_upgrade)
 
     s = sub.add_parser("import", help="import from another password manager")
     s.add_argument("file")
